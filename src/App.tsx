@@ -8,6 +8,7 @@ import StudentDashboard from './pages/StudentDashboard';
 import Profile from './pages/Profile';
 import CalendarPage from './pages/Calendar';
 import useAuthStore from './store/authStore';
+import { isSupabaseConfigured } from './lib/supabase';
 
 function App() {
   const checkSession = useAuthStore(state => state.checkSession);
@@ -30,6 +31,19 @@ function App() {
   return (
     <Router>
       <div className="flex flex-col min-h-screen" style={{ minHeight: '100vh' }}>
+        {!isSupabaseConfigured && (
+          <div style={{
+            background: '#FEF3C7',
+            color: '#92400E',
+            padding: '0.6rem 1rem',
+            textAlign: 'center',
+            fontSize: '0.85rem',
+            fontWeight: 500,
+            borderBottom: '1px solid #FCD34D'
+          }}>
+            ⚠️ Supabase environment variables are missing. Configure <code>VITE_SUPABASE_URL</code> and <code>VITE_SUPABASE_ANON_KEY</code> in Vercel Project Settings &amp; redeploy.
+          </div>
+        )}
         <header className="glass-panel" style={{ padding: '1rem', borderBottom: '1px solid var(--border)', position: 'sticky', top: 0, zIndex: 50 }}>
           <div className="container flex items-center justify-between">
             <Link to="/" className="flex items-center gap-2" style={{ color: 'var(--text-main)', fontSize: '1.25rem', fontWeight: 700 }}>
