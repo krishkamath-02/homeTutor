@@ -1,13 +1,18 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { Upload, FileText, CheckCircle, Clock, BarChart3, Book, Sparkles, Trash2, Image, AlertTriangle, Check, Info, Printer, Play, User as UserIcon, Zap, Lock, Users, TrendingUp, Calendar } from 'lucide-react';
+import { 
+    Upload, FileText, CheckCircle, BarChart3, Book, Sparkles, 
+    Trash2, Image, AlertTriangle, Printer, Play, 
+    User as UserIcon, Zap, Lock, Users, TrendingUp, Calendar,
+    Eye, X, Camera, CheckCircle2, Smartphone, History, Search, Award
+} from 'lucide-react';
 import PrintableTest from '../components/PrintableTest';
 import TestTaker from '../components/TestTaker';
 import TestReview from '../components/TestReview';
 import UpgradeModal from '../components/UpgradeModal';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import useAuthStore from '../store/authStore';
-import useAppStore, { type Test } from '../store/appStore';
+import useAppStore, { type Test, type DailyHomework } from '../store/appStore';
 import { supabase } from '../lib/supabase';
 import { detectSubjectFromImage, type Difficulty } from '../lib/gemini';
 import { checkImageClarity, type ClarityResult } from '../utils/imageClarity';
@@ -34,12 +39,16 @@ const ParentDashboard = () => {
     const userTrackedSubjects = (user?.subjects || []).map(s => s === 'Mathematics' ? 'Math' : s);
     const displaySubjects = userTrackedSubjects.length ? SUBJECTS.filter(s => userTrackedSubjects.includes(s)) : SUBJECTS;
     const tests = useAppStore((state) => state.tests);
+    const dailyHomeworkList = useAppStore((state) => state.dailyHomeworkList);
     const progress = useAppStore((state) => state.progress);
     const childrenList = useAppStore((state) => state.childrenList);
     const uploadHomework = useAppStore((state) => state.uploadHomework);
     const generateTest = useAppStore((state) => state.generateTest);
     const generateRemedialTest = useAppStore((state) => state.generateRemedialTest);
     const deleteTest = useAppStore((state) => state.deleteTest);
+    const addDailyHomework = useAppStore((state) => state.addDailyHomework);
+    const deleteDailyHomework = useAppStore((state) => state.deleteDailyHomework);
+    const fetchDailyHomework = useAppStore((state) => state.fetchDailyHomework);
     const isGenerating = useAppStore((state) => state.isGenerating);
     const fetchTests = useAppStore((state) => state.fetchTests);
     const fetchProgress = useAppStore((state) => state.fetchProgress);
@@ -49,9 +58,10 @@ const ParentDashboard = () => {
 
     useEffect(() => {
         fetchTests();
+        fetchDailyHomework();
         fetchProgress();
         fetchChildren();
-    }, [fetchTests, fetchProgress, fetchChildren]);
+    }, [fetchTests, fetchDailyHomework, fetchProgress, fetchChildren]);
 
     // Auto-generate invite code if missing for parent
     useEffect(() => {
@@ -99,15 +109,140 @@ const ParentDashboard = () => {
     const [remedialGeneratingTopic, setRemedialGeneratingTopic] = useState<string | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
+    // Dashboard Tabs
+    const [activeTab, setActiveTab] = useState<'homework_and_tests' | 'history' | 'analytics'>('homework_and_tests');
+    const [creationMode, setCreationMode] = useState<'daily_homework' | 'generate_test'>('daily_homework');
+    const [historyFilter, setHistoryFilter] = useState<'all' | 'uploaded_homework' | 'completed_homework' | 'generated_tests' | 'completed_tests'>('all');
+    const [historySearchQuery, setHistorySearchQuery] = useState('');
+
+    // Daily Homework Form State
+    const [hwTitle, setHwTitle] = useState('');
+    const [hwSubject, setHwSubject] = useState(displaySubjects[0] || 'Math');
+    const [hwChildId, setHwChildId] = useState<string>('');
+    const [hwSource, setHwSource] = useState<'whatsapp' | 'teams' | 'diary' | 'manual'>('whatsapp');
+    const [hwDueDate, setHwDueDate] = useState('Today');
+    const [hwDescription, setHwDescription] = useState('');
+    const [hwFiles, setHwFiles] = useState<File[]>([]);
+    const [hwPreviews, setHwPreviews] = useState<string[]>([]);
+    const [hwIsSaving, setHwIsSaving] = useState(false);
+    const [hwSuccessMsg, setHwSuccessMsg] = useState<string | null>(null);
+    const [hwErrorMsg, setHwErrorMsg] = useState<string | null>(null);
+
+    // Modal state for viewing homework & AI verification report
+    const [viewingHomework, setViewingHomework] = useState<DailyHomework | null>(null);
+    const [viewingFullImage, setViewingFullImage] = useState<string | null>(null);
+    const hwFileInputRef = useRef<HTMLInputElement>(null);
+
     const filteredTests = selectedChildId === 'all'
         ? tests
         : tests.filter(t => (t as any).student_id === selectedChildId || (t as any).studentId === selectedChildId);
+
+    const filteredHomework = selectedChildId === 'all'
+        ? dailyHomeworkList
+        : dailyHomeworkList.filter(h => h.childId === selectedChildId);
+
+    const handleHwFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        if (!e.target.files || e.target.files.length === 0) return;
+        const newFiles = Array.from(e.target.files);
+        setHwFiles(prev => [...prev, ...newFiles]);
+        const newPreviews = newFiles.map(f => f.type.startsWith('image/') ? URL.createObjectURL(f) : '');
+        setHwPreviews(prev => [...prev, ...newPreviews]);
+        setHwErrorMsg(null);
+    };
+
+    const removeHwFile = (index: number) => {
+        setHwFiles(prev => prev.filter((_, i) => i !== index));
+        setHwPreviews(prev => prev.filter((_, i) => i !== index));
+    };
+
+    const handleSaveDailyHomework = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!hwTitle.trim()) {
+            setHwErrorMsg('Please enter a title or chapter for this homework.');
+            return;
+        }
+        if (hwFiles.length === 0) {
+            setHwErrorMsg('Please upload or snap a photo of the school homework (from WhatsApp / Teams).');
+            return;
+        }
+
+        setHwIsSaving(true);
+        setHwErrorMsg(null);
+        try {
+            const assignedChild = childrenList.find(c => c.id === hwChildId) || childrenList[0];
+            await addDailyHomework({
+                childId: assignedChild?.id || (selectedChildId === 'all' ? childrenList[0]?.id : selectedChildId),
+                childName: assignedChild?.name || 'Child',
+                title: hwTitle.trim(),
+                subject: hwSubject,
+                description: hwDescription.trim(),
+                source: hwSource,
+                dueDate: hwDueDate,
+                files: hwFiles
+            });
+
+            setHwSuccessMsg('🎉 Daily homework saved! It is now visible to your student.');
+            setHwTitle('');
+            setHwDescription('');
+            setHwFiles([]);
+            setHwPreviews([]);
+            setTimeout(() => setHwSuccessMsg(null), 3500);
+        } catch (err: any) {
+            setHwErrorMsg(err.message || 'Failed to save daily homework');
+        } finally {
+            setHwIsSaving(false);
+        }
+    };
 
     const completedTests = filteredTests.filter(t => t.status === 'completed');
     const averageScore = completedTests.length > 0
         ? Math.round(completedTests.reduce((acc, curr) => acc + (curr.score || 0), 0) / completedTests.length)
         : 0;
     const chartData = completedTests.slice(-7).map((t, idx) => ({ name: `T${idx + 1}`, score: t.score || 0 }));
+
+    const query = historySearchQuery.trim().toLowerCase();
+
+    // 1. Uploaded Homework history
+    const historyUploadedHw = filteredHomework.filter(h => {
+        if (!query) return true;
+        return (
+            h.title.toLowerCase().includes(query) ||
+            h.subject.toLowerCase().includes(query) ||
+            (h.childName && h.childName.toLowerCase().includes(query)) ||
+            (h.description && h.description.toLowerCase().includes(query))
+        );
+    });
+
+    // 2. Completed Homework history (verified by AI)
+    const historyCompletedHw = filteredHomework.filter(h => {
+        const isDone = h.status === 'verified' || h.submissionStatus === 'verified_complete' || Boolean(h.verificationResult);
+        if (!isDone) return false;
+        if (!query) return true;
+        return (
+            h.title.toLowerCase().includes(query) ||
+            h.subject.toLowerCase().includes(query) ||
+            (h.childName && h.childName.toLowerCase().includes(query))
+        );
+    });
+
+    // 3. Generated Practice Tests history
+    const historyGeneratedTests = filteredTests.filter(t => {
+        if (!query) return true;
+        return (
+            t.title.toLowerCase().includes(query) ||
+            t.subject.toLowerCase().includes(query)
+        );
+    });
+
+    // 4. Completed Practice Tests history
+    const historyCompletedTests = filteredTests.filter(t => {
+        if (t.status !== 'completed') return false;
+        if (!query) return true;
+        return (
+            t.title.toLowerCase().includes(query) ||
+            t.subject.toLowerCase().includes(query)
+        );
+    });
 
     const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
         if (!e.target.files || e.target.files.length === 0) return;
@@ -411,43 +546,1367 @@ const ParentDashboard = () => {
             </div>
 
             {/* Quick Stats */}
-            <div className="stats-grid-responsive">
-                <div className="card" style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                    <div style={{ background: 'rgba(79, 70, 229, 0.1)', padding: '0.85rem', borderRadius: 'var(--radius-md)', color: 'var(--primary)', flexShrink: 0 }}><FileText size={22} /></div>
-                    <div><h3 style={{ fontSize: '1.4rem', margin: 0 }}>{tests.length}</h3><p style={{ color: 'var(--text-muted)', margin: 0, fontSize: '0.8rem' }}>Total Assignments</p></div>
+            <div className="stats-grid-responsive" style={{ marginBottom: '1.5rem' }}>
+                <div
+                    className="card hover-lift"
+                    onClick={() => {
+                        setActiveTab('history');
+                        setHistoryFilter('uploaded_homework');
+                    }}
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.85rem', padding: '1rem', cursor: 'pointer' }}
+                    title="Click to view all uploaded homework in history"
+                >
+                    <div style={{ background: 'rgba(79, 70, 229, 0.1)', padding: '0.75rem', borderRadius: 'var(--radius-md)', color: 'var(--primary)', flexShrink: 0 }}>
+                        <Smartphone size={22} />
+                    </div>
+                    <div>
+                        <h3 style={{ fontSize: '1.35rem', margin: 0, fontWeight: 700 }}>{filteredHomework.length}</h3>
+                        <p style={{ color: 'var(--text-muted)', margin: 0, fontSize: '0.75rem' }}>
+                            Daily Homework • {filteredHomework.filter(h => h.status === 'pending' || h.status === 'needs_revision').length} pending →
+                        </p>
+                    </div>
                 </div>
-                <div className="card" style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                    <div style={{ background: 'rgba(16, 185, 129, 0.1)', padding: '0.85rem', borderRadius: 'var(--radius-md)', color: 'var(--secondary)', flexShrink: 0 }}><CheckCircle size={22} /></div>
-                    <div><h3 style={{ fontSize: '1.4rem', margin: 0 }}>{averageScore}%</h3><p style={{ color: 'var(--text-muted)', margin: 0, fontSize: '0.8rem' }}>Average Score</p></div>
+
+                <div
+                    className="card hover-lift"
+                    onClick={() => {
+                        setActiveTab('history');
+                        setHistoryFilter('generated_tests');
+                    }}
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.85rem', padding: '1rem', cursor: 'pointer' }}
+                    title="Click to view generated practice tests in history"
+                >
+                    <div style={{ background: 'rgba(59, 130, 246, 0.1)', padding: '0.75rem', borderRadius: 'var(--radius-md)', color: '#2563eb', flexShrink: 0 }}>
+                        <FileText size={22} />
+                    </div>
+                    <div>
+                        <h3 style={{ fontSize: '1.35rem', margin: 0, fontWeight: 700 }}>{filteredTests.length}</h3>
+                        <p style={{ color: 'var(--text-muted)', margin: 0, fontSize: '0.75rem' }}>
+                            Practice Tests • {completedTests.length} done →
+                        </p>
+                    </div>
                 </div>
-                <div className="card" style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                    <div style={{ background: 'rgba(245, 158, 11, 0.1)', padding: '0.85rem', borderRadius: 'var(--radius-md)', color: '#f59e0b', flexShrink: 0 }}><Clock size={22} /></div>
-                    <div><h3 style={{ fontSize: '1.4rem', margin: 0 }}>{completedTests.length}</h3><p style={{ color: 'var(--text-muted)', margin: 0, fontSize: '0.8rem' }}>Tests Completed</p></div>
+
+                <div
+                    className="card hover-lift"
+                    onClick={() => {
+                        setActiveTab('history');
+                        setHistoryFilter('completed_tests');
+                    }}
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.85rem', padding: '1rem', cursor: 'pointer' }}
+                    title="Click to view completed test scores in history"
+                >
+                    <div style={{ background: 'rgba(16, 185, 129, 0.1)', padding: '0.75rem', borderRadius: 'var(--radius-md)', color: 'var(--secondary)', flexShrink: 0 }}>
+                        <CheckCircle size={22} />
+                    </div>
+                    <div>
+                        <h3 style={{ fontSize: '1.35rem', margin: 0, fontWeight: 700 }}>{averageScore}%</h3>
+                        <p style={{ color: 'var(--text-muted)', margin: 0, fontSize: '0.75rem' }}>Avg Score • View history →</p>
+                    </div>
                 </div>
-                <Link to="/calendar" className="card hover-lift" style={{ display: 'flex', alignItems: 'center', gap: '1rem', textDecoration: 'none', color: 'inherit' }}>
-                    <div style={{ background: 'rgba(79, 70, 229, 0.1)', padding: '0.85rem', borderRadius: 'var(--radius-md)', color: 'var(--primary)', flexShrink: 0 }}><Calendar size={22} /></div>
-                    <div><h3 style={{ fontSize: '1.4rem', margin: 0 }}>Calendar</h3><p style={{ color: 'var(--text-muted)', margin: 0, fontSize: '0.8rem' }}>Exams & Blocks →</p></div>
+
+                <Link to="/calendar" className="card hover-lift" style={{ display: 'flex', alignItems: 'center', gap: '0.85rem', padding: '1rem', textDecoration: 'none', color: 'inherit' }}>
+                    <div style={{ background: 'rgba(245, 158, 11, 0.1)', padding: '0.75rem', borderRadius: 'var(--radius-md)', color: '#d97706', flexShrink: 0 }}>
+                        <Calendar size={22} />
+                    </div>
+                    <div>
+                        <h3 style={{ fontSize: '1.15rem', margin: 0, fontWeight: 700 }}>Calendar</h3>
+                        <p style={{ color: 'var(--text-muted)', margin: 0, fontSize: '0.75rem' }}>Exams & Schedule →</p>
+                    </div>
                 </Link>
             </div>
 
-            <div className="parent-dashboard-grid">
+            {/* Mobile-Friendly Segmented Tab Navigation */}
+            <div className="dashboard-tabs-container" role="tablist" aria-label="Parent Dashboard Views">
+                <button
+                    type="button"
+                    role="tab"
+                    id="tab-homework-tests"
+                    aria-controls="panel-homework-tests"
+                    aria-selected={activeTab === 'homework_and_tests'}
+                    className={`dashboard-tab-btn ${activeTab === 'homework_and_tests' ? 'active' : ''}`}
+                    onClick={() => setActiveTab('homework_and_tests')}
+                >
+                    <Book size={16} /> Homework & Tests
+                </button>
+                <button
+                    type="button"
+                    role="tab"
+                    id="tab-history"
+                    aria-controls="panel-history"
+                    aria-selected={activeTab === 'history'}
+                    className={`dashboard-tab-btn ${activeTab === 'history' ? 'active' : ''}`}
+                    onClick={() => setActiveTab('history')}
+                >
+                    <History size={16} /> History & Archive ({filteredHomework.length + filteredTests.length})
+                </button>
+                <button
+                    type="button"
+                    role="tab"
+                    id="tab-analytics"
+                    aria-controls="panel-analytics"
+                    aria-selected={activeTab === 'analytics'}
+                    className={`dashboard-tab-btn ${activeTab === 'analytics' ? 'active' : ''}`}
+                    onClick={() => setActiveTab('analytics')}
+                >
+                    <TrendingUp size={16} /> Analytics & Mastery
+                </button>
+            </div>
 
-                {/* Main Content */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+            {/* TAB PANEL 1: DAILY HOMEWORK & PRACTICE TESTS */}
+            {activeTab === 'homework_and_tests' && (
+                <div id="panel-homework-tests" role="tabpanel" aria-labelledby="tab-homework-tests" style={{ display: 'flex', flexDirection: 'column', gap: '1.75rem' }}>
+                    
+                    {/* CREATION HUB CARD WITH TOGGLE */}
+                    <div className="card" style={{ border: '1.5px solid var(--border)', boxShadow: '0 4px 16px rgba(0,0,0,0.04)' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.85rem', marginBottom: '1.25rem' }}>
+                            <div>
+                                <h2 style={{ fontSize: '1.25rem', margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                    {creationMode === 'daily_homework' ? <Smartphone size={20} color="var(--primary)" /> : <Sparkles size={20} color="var(--primary)" />}
+                                    {creationMode === 'daily_homework' ? 'School Daily Homework' : 'AI Practice Test Generator'}
+                                </h2>
+                                <p style={{ margin: '0.25rem 0 0', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                                    {creationMode === 'daily_homework'
+                                        ? 'Upload homework photos received via WhatsApp or MS Teams. Your student will upload their completed notebook for AI verification.'
+                                        : 'Upload worksheet/book photos to generate timed, auto-graded practice tests.'}
+                                </p>
+                            </div>
 
+                            {/* TOGGLE SWITCH */}
+                            <div className="creation-mode-toggle" role="tablist" aria-label="Creation Mode">
+                                <button
+                                    type="button"
+                                    role="tab"
+                                    aria-selected={creationMode === 'daily_homework'}
+                                    className={`creation-mode-btn ${creationMode === 'daily_homework' ? 'active' : ''}`}
+                                    onClick={() => setCreationMode('daily_homework')}
+                                >
+                                    📲 Daily School Homework
+                                </button>
+                                <button
+                                    type="button"
+                                    role="tab"
+                                    aria-selected={creationMode === 'generate_test'}
+                                    className={`creation-mode-btn ${creationMode === 'generate_test' ? 'active' : ''}`}
+                                    onClick={() => setCreationMode('generate_test')}
+                                >
+                                    ⚡ Generate Practice Test
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* MODE A: DAILY SCHOOL HOMEWORK UPLOAD */}
+                        {creationMode === 'daily_homework' && (
+                            <form onSubmit={handleSaveDailyHomework} style={{ display: 'flex', flexDirection: 'column', gap: '1.15rem' }}>
+                                {/* Source Selector */}
+                                <div>
+                                    <label style={{ display: 'block', fontWeight: 600, fontSize: '0.85rem', marginBottom: '0.4rem' }}>
+                                        Homework Source
+                                    </label>
+                                    <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                                        {[
+                                            { id: 'whatsapp', label: '🟢 WhatsApp Class Group' },
+                                            { id: 'teams', label: '🟣 Microsoft Teams' },
+                                            { id: 'diary', label: '📔 Student Diary' },
+                                            { id: 'manual', label: '✏️ Manual Entry' }
+                                        ].map(src => (
+                                            <button
+                                                key={src.id}
+                                                type="button"
+                                                onClick={() => setHwSource(src.id as any)}
+                                                style={{
+                                                    padding: '0.45rem 0.85rem',
+                                                    borderRadius: '2rem',
+                                                    border: `1.5px solid ${hwSource === src.id ? 'var(--primary)' : 'var(--border)'}`,
+                                                    background: hwSource === src.id ? 'rgba(79, 70, 229, 0.08)' : 'var(--surface)',
+                                                    color: hwSource === src.id ? 'var(--primary)' : 'var(--text-main)',
+                                                    fontWeight: hwSource === src.id ? 700 : 500,
+                                                    fontSize: '0.82rem',
+                                                    cursor: 'pointer'
+                                                }}
+                                            >
+                                                {src.label}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                {/* Child & Subject Row */}
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
+                                    {childrenList.length > 1 && (
+                                        <div>
+                                            <label style={{ display: 'block', fontWeight: 600, fontSize: '0.85rem', marginBottom: '0.4rem' }}>
+                                                Assign To Child
+                                            </label>
+                                            <select
+                                                value={hwChildId || (childrenList[0]?.id || '')}
+                                                onChange={e => setHwChildId(e.target.value)}
+                                                style={{ width: '100%', padding: '0.65rem 0.85rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)', background: 'var(--surface)', fontSize: '0.9rem' }}
+                                            >
+                                                {childrenList.map(c => (
+                                                    <option key={c.id} value={c.id}>{c.name}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                    )}
+
+                                    <div>
+                                        <label style={{ display: 'block', fontWeight: 600, fontSize: '0.85rem', marginBottom: '0.4rem' }}>
+                                            Subject
+                                        </label>
+                                        <select
+                                            value={hwSubject}
+                                            onChange={e => setHwSubject(e.target.value)}
+                                            style={{ width: '100%', padding: '0.65rem 0.85rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)', background: 'var(--surface)', fontSize: '0.9rem' }}
+                                        >
+                                            {displaySubjects.map(s => (
+                                                <option key={s} value={s}>{s}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+
+                                    <div>
+                                        <label style={{ display: 'block', fontWeight: 600, fontSize: '0.85rem', marginBottom: '0.4rem' }}>
+                                            Due By
+                                        </label>
+                                        <input
+                                            type="text"
+                                            value={hwDueDate}
+                                            onChange={e => setHwDueDate(e.target.value)}
+                                            placeholder="e.g. Today, Tomorrow, or 25 Nov"
+                                            style={{ width: '100%', padding: '0.65rem 0.85rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)', background: 'var(--surface)', fontSize: '0.9rem' }}
+                                        />
+                                    </div>
+                                </div>
+
+                                {/* Homework Title / Topic */}
+                                <div>
+                                    <label style={{ display: 'block', fontWeight: 600, fontSize: '0.85rem', marginBottom: '0.4rem' }}>
+                                        Homework Title / Chapter
+                                    </label>
+                                    <input
+                                        type="text"
+                                        value={hwTitle}
+                                        onChange={e => setHwTitle(e.target.value)}
+                                        placeholder="e.g. Ex 4.2 Linear Equations Q1 to Q8, or Science Ch 5 Notes"
+                                        style={{ width: '100%', padding: '0.65rem 0.85rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)', background: 'var(--surface)', fontSize: '0.9rem' }}
+                                    />
+                                </div>
+
+                                {/* Teacher Notes (Optional) */}
+                                <div>
+                                    <label style={{ display: 'block', fontWeight: 600, fontSize: '0.85rem', marginBottom: '0.4rem' }}>
+                                        Teacher's Notes or Specific Instructions (Optional)
+                                    </label>
+                                    <textarea
+                                        value={hwDescription}
+                                        onChange={e => setHwDescription(e.target.value)}
+                                        placeholder="e.g. Write answers with complete steps in notebook. Rough work required on the right margin."
+                                        rows={2}
+                                        style={{ width: '100%', padding: '0.65rem 0.85rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)', background: 'var(--surface)', fontSize: '0.88rem', resize: 'vertical' }}
+                                    />
+                                </div>
+
+                                {/* Photo / Screenshot Upload */}
+                                <div>
+                                    <label style={{ display: 'block', fontWeight: 600, fontSize: '0.85rem', marginBottom: '0.4rem' }}>
+                                        School Homework Photo(s) / Screenshot(s)
+                                    </label>
+                                    <label style={{
+                                        display: 'block',
+                                        border: `2px dashed ${hwFiles.length > 0 ? 'var(--primary)' : 'var(--border)'}`,
+                                        borderRadius: 'var(--radius-md)',
+                                        padding: '1.25rem 1rem',
+                                        textAlign: 'center',
+                                        cursor: 'pointer',
+                                        background: hwFiles.length > 0 ? 'rgba(79,70,229,0.03)' : 'var(--surface-hover)',
+                                        transition: 'var(--transition)'
+                                    }}>
+                                        <input
+                                            ref={hwFileInputRef}
+                                            type="file"
+                                            style={{ display: 'none' }}
+                                            onChange={handleHwFileChange}
+                                            accept="image/*,.pdf"
+                                            multiple
+                                        />
+                                        <div style={{ color: 'var(--text-muted)' }}>
+                                            <Camera size={26} style={{ margin: '0 auto 0.4rem', color: 'var(--primary)' }} />
+                                            <p style={{ margin: 0, fontSize: '0.88rem', fontWeight: 600, color: 'var(--text-main)' }}>
+                                                Snap Photo or Upload Screenshot
+                                            </p>
+                                            <p style={{ margin: '0.2rem 0 0', fontSize: '0.75rem' }}>
+                                                WhatsApp screenshot, Teams photo, or diary page (JPG, PNG, PDF)
+                                            </p>
+                                        </div>
+                                    </label>
+
+                                    {/* Uploaded Previews */}
+                                    {hwPreviews.length > 0 && (
+                                        <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginTop: '0.75rem' }}>
+                                            {hwPreviews.map((preview, idx) => (
+                                                <div key={idx} style={{ position: 'relative', width: '70px', height: '70px', borderRadius: 'var(--radius-sm)', overflow: 'hidden', border: '1px solid var(--border)' }}>
+                                                    {preview ? (
+                                                        <img src={preview} alt="Homework page" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                                    ) : (
+                                                        <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--surface-hover)' }}>
+                                                            <FileText size={20} />
+                                                        </div>
+                                                    )}
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => removeHwFile(idx)}
+                                                        style={{
+                                                            position: 'absolute',
+                                                            top: '2px',
+                                                            right: '2px',
+                                                            background: 'rgba(0,0,0,0.65)',
+                                                            color: 'white',
+                                                            border: 'none',
+                                                            borderRadius: '50%',
+                                                            width: '20px',
+                                                            height: '20px',
+                                                            display: 'flex',
+                                                            alignItems: 'center',
+                                                            justifyContent: 'center',
+                                                            cursor: 'pointer'
+                                                        }}
+                                                    >
+                                                        <X size={12} />
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+
+                                {/* Alerts */}
+                                {hwErrorMsg && (
+                                    <div style={{ padding: '0.75rem', background: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: 'var(--radius-md)', color: '#dc2626', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                        <AlertTriangle size={16} />
+                                        <span>{hwErrorMsg}</span>
+                                    </div>
+                                )}
+                                {hwSuccessMsg && (
+                                    <div style={{ padding: '0.75rem', background: 'rgba(16, 185, 129, 0.1)', border: '1px solid rgba(16, 185, 129, 0.25)', borderRadius: 'var(--radius-md)', color: '#047857', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                        <CheckCircle2 size={16} />
+                                        <span>{hwSuccessMsg}</span>
+                                    </div>
+                                )}
+
+                                <button
+                                    type="submit"
+                                    disabled={hwIsSaving}
+                                    className="btn btn-primary"
+                                    style={{ width: '100%', justifyContent: 'center', padding: '0.85rem', fontSize: '0.95rem' }}
+                                >
+                                    {hwIsSaving ? 'Saving Homework...' : '💾 Save School Homework'}
+                                </button>
+                            </form>
+                        )}
+
+                        {/* MODE B: AI PRACTICE TEST GENERATOR */}
+                        {creationMode === 'generate_test' && (
+                            <div>
+                                {generateSuccess ? (
+                                    <div style={{ textAlign: 'center', padding: '1.5rem 0' }}>
+                                        <div style={{ background: 'rgba(16, 185, 129, 0.1)', width: '56px', height: '56px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem', color: 'var(--secondary)' }}>
+                                            <CheckCircle size={28} />
+                                        </div>
+                                        <h3 style={{ marginBottom: '0.5rem' }}>Test Generated! 🎉</h3>
+                                        <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem', marginBottom: '1.25rem' }}>
+                                            Your custom test is ready for your child to practice.
+                                        </p>
+                                        
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem', maxWidth: '320px', margin: '0 auto 1rem' }}>
+                                            <button className="btn btn-primary" onClick={() => window.print()} style={{ width: '100%', justifyContent: 'center' }}>
+                                                <Printer size={16} /> Download as PDF
+                                            </button>
+                                            <button className="btn btn-secondary" onClick={() => setTakeTestInlineId(generatedTestId)} style={{ width: '100%', justifyContent: 'center' }}>
+                                                <Play size={16} /> Take Test Online
+                                            </button>
+                                        </div>
+
+                                        <button onClick={resetUpload} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', textDecoration: 'underline', cursor: 'pointer', fontSize: '0.85rem' }}>
+                                            Create Another Test
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <>
+                                        <div style={{ marginBottom: '1.15rem' }}>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
+                                                <label style={{ fontWeight: 600, fontSize: '0.85rem' }}>Subject</label>
+                                                <Link to="/profile" style={{ fontSize: '0.78rem', color: 'var(--primary)', textDecoration: 'none' }}>
+                                                    Edit Tracked Subjects →
+                                                </Link>
+                                            </div>
+
+                                            {/* AI Auto-Detected Subject Banner */}
+                                            {isDetectingSubject && (
+                                                <div style={{ padding: '0.5rem 0.75rem', background: 'rgba(79, 70, 229, 0.08)', borderRadius: 'var(--radius-sm)', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem', color: 'var(--primary)' }}>
+                                                    <Sparkles size={14} className="animate-spin" />
+                                                    <span>AI analyzing uploaded worksheet to recognize subject...</span>
+                                                </div>
+                                            )}
+
+                                            {detectedSubject && !isDetectingSubject && (
+                                                <div style={{ padding: '0.5rem 0.75rem', background: 'rgba(16, 185, 129, 0.1)', borderRadius: 'var(--radius-sm)', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.8rem', color: '#047857' }}>
+                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                                                        <Sparkles size={14} color="#10B981" />
+                                                        <span>✨ Auto-recognized: <strong>{detectedSubject}</strong></span>
+                                                    </div>
+                                                    <button 
+                                                        type="button" 
+                                                        onClick={() => setDetectedSubject(null)}
+                                                        style={{ background: 'none', border: 'none', color: '#047857', cursor: 'pointer', fontSize: '0.75rem', textDecoration: 'underline' }}
+                                                    >
+                                                        Dismiss
+                                                    </button>
+                                                </div>
+                                            )}
+
+                                            {!isCustomSubject ? (
+                                                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                                                    <select 
+                                                        value={selectedSubject} 
+                                                        onChange={e => {
+                                                            if (e.target.value === '__CUSTOM__') {
+                                                                setIsCustomSubject(true);
+                                                                setCustomSubjectText('');
+                                                            } else {
+                                                                setSelectedSubject(e.target.value);
+                                                            }
+                                                        }}
+                                                        style={{ flex: 1, padding: '0.65rem 0.85rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)', background: 'var(--surface)', fontSize: '0.9rem' }}
+                                                    >
+                                                        <optgroup label="📌 Tracked Subjects">
+                                                            {displaySubjects.map(s => <option key={s} value={s}>{s}</option>)}
+                                                        </optgroup>
+                                                        <optgroup label="📚 More Curriculum Subjects">
+                                                            {SUBJECTS.filter(s => !displaySubjects.includes(s)).map(s => (
+                                                                <option key={s} value={s}>{s}</option>
+                                                            ))}
+                                                        </optgroup>
+                                                        <optgroup label="➕ Custom">
+                                                            <option value="__CUSTOM__">+ Add Custom Subject...</option>
+                                                        </optgroup>
+                                                    </select>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setIsCustomSubject(true)}
+                                                        className="btn btn-secondary"
+                                                        style={{ padding: '0.65rem 0.85rem', fontSize: '0.82rem', whiteSpace: 'nowrap' }}
+                                                    >
+                                                        + Custom
+                                                    </button>
+                                                </div>
+                                            ) : (
+                                                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                                                    <input
+                                                        type="text"
+                                                        className="input"
+                                                        placeholder="Enter custom subject..."
+                                                        value={customSubjectText}
+                                                        onChange={e => {
+                                                            setCustomSubjectText(e.target.value);
+                                                            setSelectedSubject(e.target.value);
+                                                        }}
+                                                        autoFocus
+                                                        style={{ flex: 1, padding: '0.65rem 0.85rem' }}
+                                                    />
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            setIsCustomSubject(false);
+                                                            if (!customSubjectText.trim()) {
+                                                                setSelectedSubject(displaySubjects[0] || 'Math');
+                                                            }
+                                                        }}
+                                                        className="btn btn-secondary"
+                                                        style={{ padding: '0.65rem 0.85rem', fontSize: '0.82rem' }}
+                                                    >
+                                                        Cancel
+                                                    </button>
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginBottom: '1.15rem' }}>
+                                            <div>
+                                                <label style={{ display: 'block', fontWeight: 600, fontSize: '0.85rem', marginBottom: '0.4rem' }}>Due By (Optional)</label>
+                                                <input type="datetime-local" value={dueDate} onChange={e => setDueDate(e.target.value)}
+                                                    style={{ width: '100%', padding: '0.65rem 0.85rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)', background: 'var(--surface)', fontSize: '0.9rem' }} />
+                                            </div>
+
+                                            <div>
+                                                <label style={{ display: 'block', fontWeight: 600, fontSize: '0.85rem', marginBottom: '0.4rem' }}>Number of Questions</label>
+                                                <select value={questionCount} onChange={e => setQuestionCount(Number(e.target.value))}
+                                                    style={{ width: '100%', padding: '0.65rem 0.85rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)', background: 'var(--surface)', fontSize: '0.9rem' }}>
+                                                    <option value={5}>5 Questions (Quick Check)</option>
+                                                    <option value={10}>10 Questions (Standard Test)</option>
+                                                    <option value={15}>15 Questions (Comprehensive)</option>
+                                                </select>
+                                            </div>
+                                        </div>
+
+                                        {/* Difficulty Selector */}
+                                        <div style={{ marginBottom: '1.15rem' }}>
+                                            <label style={{ display: 'block', fontWeight: 600, fontSize: '0.85rem', marginBottom: '0.4rem' }}>Difficulty</label>
+                                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.5rem' }}>
+                                                {(['basic', 'intermediate', 'advanced'] as Difficulty[]).map(d => (
+                                                    <button key={d} type="button" onClick={() => setDifficulty(d)}
+                                                        style={{
+                                                            padding: '0.55rem 0.65rem', borderRadius: 'var(--radius-md)', border: `2px solid ${difficulty === d ? 'var(--primary)' : 'var(--border)'}`,
+                                                            background: difficulty === d ? 'rgba(79,70,229,0.08)' : 'transparent',
+                                                            color: difficulty === d ? 'var(--primary)' : 'var(--text-muted)',
+                                                            fontWeight: difficulty === d ? 700 : 500, cursor: 'pointer', fontSize: '0.82rem', textAlign: 'center', textTransform: 'capitalize'
+                                                        }}>
+                                                        {d}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+
+                                        {/* Special Instructions */}
+                                        <div style={{ marginBottom: '1.15rem' }}>
+                                            <label style={{ display: 'block', fontWeight: 600, fontSize: '0.85rem', marginBottom: '0.4rem' }}>Special Instructions (Optional)</label>
+                                            <textarea
+                                                value={customInstructions}
+                                                onChange={e => setCustomInstructions(e.target.value)}
+                                                placeholder="e.g. Focus on word problems, or include 2 tough geometry questions..."
+                                                rows={2}
+                                                style={{ width: '100%', padding: '0.65rem 0.85rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)', background: 'var(--surface)', fontSize: '0.88rem', resize: 'vertical' }}
+                                            />
+                                        </div>
+
+                                        {/* Images Upload */}
+                                        <div style={{ marginBottom: '1rem' }}>
+                                            <label style={{ display: 'block', fontWeight: 600, fontSize: '0.85rem', marginBottom: '0.4rem' }}>Worksheet / Book Photos</label>
+                                            <label style={{
+                                                display: 'block', border: `2px dashed ${selectedFiles.length > 0 ? 'var(--primary)' : 'var(--border)'}`,
+                                                borderRadius: 'var(--radius-md)', padding: '1.15rem 1rem', textAlign: 'center', cursor: 'pointer',
+                                                background: selectedFiles.length > 0 ? 'rgba(79,70,229,0.04)' : 'var(--surface-hover)', transition: 'var(--transition)'
+                                            }}>
+                                                <input ref={fileInputRef} type="file" style={{ display: 'none' }} onChange={handleFileChange} accept="image/*,.pdf" multiple />
+                                                <div style={{ color: 'var(--text-muted)' }}>
+                                                    <Image size={24} style={{ margin: '0 auto 0.4rem', color: 'var(--primary)' }} />
+                                                    <p style={{ margin: 0, fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-main)' }}>Click to add files</p>
+                                                    <p style={{ margin: '0.15rem 0 0', fontSize: '0.75rem' }}>PNG, JPG or PDF • multiple allowed</p>
+                                                </div>
+                                            </label>
+                                        </div>
+
+                                        {/* Previews */}
+                                        {selectedFiles.length > 0 && (
+                                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '1rem' }}>
+                                                {selectedFiles.map((file: File, idx: number) => (
+                                                    <div key={idx} style={{ padding: '0.65rem', background: 'var(--surface-hover)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+                                                        {filePreviews[idx] ? (
+                                                            <img src={filePreviews[idx]} alt={file.name} style={{ width: '32px', height: '32px', objectFit: 'cover', borderRadius: '4px', flexShrink: 0 }} />
+                                                        ) : (
+                                                            <FileText size={18} />
+                                                        )}
+                                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                                            <p style={{ margin: 0, fontWeight: 600, fontSize: '0.8rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</p>
+                                                            <p style={{ margin: 0, fontSize: '0.7rem', color: 'var(--text-muted)' }}>{(file.size / 1024 / 1024).toFixed(2)} MB</p>
+                                                        </div>
+                                                        <button onClick={() => removeFile(idx)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: '0.2rem' }}>
+                                                            <Trash2 size={14} />
+                                                        </button>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+
+                                        {generateError && (
+                                            <div style={{ padding: '0.75rem', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 'var(--radius-md)', marginBottom: '1rem', color: '#dc2626', fontSize: '0.85rem' }}>
+                                                <span>{generateError}</span>
+                                            </div>
+                                        )}
+
+                                        {!pendingTestId ? (
+                                            <button className="btn btn-primary" onClick={handleUploadAndPrepare}
+                                                disabled={(selectedFiles.length === 0 && !customInstructions.trim()) || isUploading}
+                                                style={{ width: '100%', justifyContent: 'center', opacity: (selectedFiles.length === 0 && !customInstructions.trim()) ? 0.5 : 1 }}>
+                                                {isUploading
+                                                    ? <><span style={{ width: '16px', height: '16px', border: '2px solid rgba(255,255,255,0.4)', borderTopColor: 'white', borderRadius: '50%', animation: 'spin 0.8s linear infinite', display: 'inline-block' }} /> Preparing…</>
+                                                    : <><Upload size={16} /> Prepare Test</>}
+                                            </button>
+                                        ) : (
+                                            <button className="btn btn-primary" onClick={handleGenerate}
+                                                disabled={isGenerating}
+                                                style={{ width: '100%', justifyContent: 'center', background: 'linear-gradient(135deg, var(--primary), #818cf8)' }}>
+                                                {isGenerating
+                                                    ? <><span style={{ width: '16px', height: '16px', border: '2px solid rgba(255,255,255,0.4)', borderTopColor: 'white', borderRadius: '50%', animation: 'spin 0.8s linear infinite', display: 'inline-block' }} /> AI is generating…</>
+                                                    : <><Sparkles size={16} /> Generate {difficulty} Test</>}
+                                            </button>
+                                        )}
+                                    </>
+                                )}
+                            </div>
+                        )}
+                    </div>
+
+                    {/* SECTION: DAILY SCHOOL HOMEWORK FEED */}
+                    <div className="card">
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                            <div>
+                                <h2 style={{ fontSize: '1.25rem', margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                    <Smartphone size={20} color="var(--primary)" /> School Daily Homework (WhatsApp / Teams)
+                                </h2>
+                                <p style={{ margin: '0.2rem 0 0', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                                    Homework pages uploaded by parent vs solved notebook pages submitted by student
+                                </p>
+                            </div>
+                            <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-muted)' }}>
+                                {filteredHomework.length} assigned
+                            </span>
+                        </div>
+
+                        {filteredHomework.length === 0 ? (
+                            <div style={{ textAlign: 'center', padding: '2rem 1rem', color: 'var(--text-muted)' }}>
+                                <Smartphone size={32} style={{ margin: '0 auto 0.5rem', opacity: 0.5 }} />
+                                <p style={{ margin: 0, fontSize: '0.9rem', fontWeight: 600 }}>No daily homework uploaded yet.</p>
+                                <p style={{ margin: '0.25rem 0 0', fontSize: '0.8rem' }}>Use the toggle above to upload today's WhatsApp or Teams school assignment.</p>
+                            </div>
+                        ) : (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                                {filteredHomework.map(hw => {
+                                    const sourceClass = hw.source === 'whatsapp' ? 'source-pill-whatsapp' : hw.source === 'teams' ? 'source-pill-teams' : 'source-pill-diary';
+                                    const sourceLabel = hw.source === 'whatsapp' ? '🟢 WhatsApp' : hw.source === 'teams' ? '🟣 Teams' : hw.source === 'diary' ? '📔 Diary' : '✏️ Manual';
+                                    const statusClass = hw.status === 'verified' ? 'badge-verified' : hw.status === 'needs_revision' ? 'badge-revision' : 'badge-pending';
+                                    const statusLabel = hw.status === 'verified'
+                                        ? `✓ Complete • ${hw.verificationResult?.completenessScore || 90}%`
+                                        : hw.status === 'needs_revision'
+                                        ? `⚠️ Revision • ${hw.verificationResult?.completenessScore || 50}%`
+                                        : hw.status === 'submitted'
+                                        ? '📸 Submitted • Verifying'
+                                        : '⏳ Pending Student';
+
+                                    return (
+                                        <div key={hw.id} style={{
+                                            padding: '1.15rem',
+                                            border: '1px solid var(--border)',
+                                            borderRadius: 'var(--radius-md)',
+                                            background: 'var(--surface)',
+                                            display: 'flex',
+                                            flexDirection: 'column',
+                                            gap: '0.75rem'
+                                        }}>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.5rem' }}>
+                                                <div>
+                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.35rem', flexWrap: 'wrap' }}>
+                                                        <span className={`source-pill ${sourceClass}`}>{sourceLabel}</span>
+                                                        <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)' }}>{hw.subject}</span>
+                                                        <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>• {hw.childName}</span>
+                                                        <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>• Due {hw.dueDate}</span>
+                                                    </div>
+                                                    <h3 style={{ margin: '0 0 0.2rem', fontSize: '1.05rem', fontWeight: 600 }}>{hw.title}</h3>
+                                                    {hw.description && (
+                                                        <p style={{ margin: 0, fontSize: '0.82rem', color: 'var(--text-muted)' }}>{hw.description}</p>
+                                                    )}
+                                                </div>
+
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                                    <span className={`status-badge ${statusClass}`}>{statusLabel}</span>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            if (window.confirm('Delete this homework item?')) {
+                                                                deleteDailyHomework(hw.id);
+                                                            }
+                                                        }}
+                                                        style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '0.25rem' }}
+                                                        title="Delete homework"
+                                                    >
+                                                        <Trash2 size={15} />
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            {/* Photo Previews (Original Assignment + Student Solved Notebook) */}
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap', padding: '0.65rem', background: 'var(--surface-hover)', borderRadius: 'var(--radius-sm)' }}>
+                                                {/* Original Assignment Photo */}
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                                    {hw.originalFiles && hw.originalFiles[0] ? (
+                                                        <img
+                                                            src={hw.originalFiles[0]}
+                                                            alt="Teacher Assignment"
+                                                            onClick={() => setViewingFullImage(hw.originalFiles![0])}
+                                                            style={{ width: '48px', height: '48px', objectFit: 'cover', borderRadius: '4px', cursor: 'pointer', border: '1px solid var(--border)' }}
+                                                        />
+                                                    ) : (
+                                                        <div style={{ width: '48px', height: '48px', background: 'var(--border)', borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                                            <FileText size={20} />
+                                                        </div>
+                                                    )}
+                                                    <div>
+                                                        <p style={{ margin: 0, fontSize: '0.75rem', fontWeight: 600 }}>Teacher Assignment</p>
+                                                        <p style={{ margin: 0, fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                                                            {hw.originalFiles?.length || 1} page(s) uploaded
+                                                        </p>
+                                                    </div>
+                                                </div>
+
+                                                <div style={{ width: '1px', height: '36px', background: 'var(--border)' }} className="desktop-only" />
+
+                                                {/* Student Solved Notebook Photo */}
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                                    {hw.studentSubmissionFiles && hw.studentSubmissionFiles[0] ? (
+                                                        <img
+                                                            src={hw.studentSubmissionFiles[0]}
+                                                            alt="Student Notebook"
+                                                            onClick={() => setViewingFullImage(hw.studentSubmissionFiles![0])}
+                                                            style={{ width: '48px', height: '48px', objectFit: 'cover', borderRadius: '4px', cursor: 'pointer', border: '2px solid #10b981' }}
+                                                        />
+                                                    ) : (
+                                                        <div style={{ width: '48px', height: '48px', background: 'var(--surface)', borderRadius: '4px', border: '1px dashed var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}>
+                                                            <Camera size={18} />
+                                                        </div>
+                                                    )}
+                                                    <div>
+                                                        <p style={{ margin: 0, fontSize: '0.75rem', fontWeight: 600 }}>Student Notebook</p>
+                                                        <p style={{ margin: 0, fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                                                            {hw.studentSubmissionFiles?.length
+                                                                ? `${hw.studentSubmissionFiles.length} page(s) submitted`
+                                                                : 'Awaiting student photo'}
+                                                        </p>
+                                                    </div>
+                                                </div>
+
+                                                {/* View Verification Report CTA */}
+                                                {hw.verificationResult && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setViewingHomework(hw)}
+                                                        className="hover-lift"
+                                                        style={{
+                                                            marginLeft: 'auto',
+                                                            background: 'linear-gradient(135deg, var(--primary) 0%, #6366f1 100%)',
+                                                            color: 'white',
+                                                            border: 'none',
+                                                            borderRadius: 'var(--radius-sm)',
+                                                            padding: '0.45rem 0.85rem',
+                                                            fontWeight: 600,
+                                                            fontSize: '0.8rem',
+                                                            cursor: 'pointer',
+                                                            display: 'flex',
+                                                            alignItems: 'center',
+                                                            gap: '0.4rem',
+                                                            boxShadow: '0 2px 6px rgba(79, 70, 229, 0.25)'
+                                                        }}
+                                                    >
+                                                        <Eye size={14} /> View AI Verification Report
+                                                    </button>
+                                                )}
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+                    </div>
+
+                    {/* SECTION: AI PRACTICE TESTS & WORKSHEETS */}
+                    <div className="card" id="tests-list-section">
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                            <div>
+                                <h2 style={{ fontSize: '1.25rem', margin: 0 }}>AI Practice Tests & Worksheets</h2>
+                                <p style={{ margin: '0.2rem 0 0', fontSize: '0.8rem', color: 'var(--text-muted)' }}>Auto-generated tests with step-by-step grading</p>
+                            </div>
+                            <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-muted)' }}>
+                                {filteredTests.length} tests
+                            </span>
+                        </div>
+
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+                            {filteredTests.map((test) => (
+                                <div key={test.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.9rem', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', gap: '0.5rem', flexWrap: 'wrap' }}>
+                                    <div style={{ flex: 1, minWidth: '180px' }}>
+                                        <h4 style={{ fontWeight: 600, margin: '0 0 0.2rem', fontSize: '0.95rem' }}>{test.title}</h4>
+                                        <p style={{ color: 'var(--text-muted)', margin: 0, fontSize: '0.78rem' }}>
+                                            {test.questions.length > 0 ? `${test.questions.length} questions` : 'No questions yet'} •{' '}
+                                            {test.status === 'completed' 
+                                                ? `Done ${test.completedAt ? new Date(test.completedAt).toLocaleDateString() : ''}` 
+                                                : test.dueDate ? `Due ${new Date(test.dueDate).toLocaleDateString()}` : 'Pending student'}
+                                        </p>
+                                    </div>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexShrink: 0 }}>
+                                        {/* Print Worksheet Button */}
+                                        {test.questions.length > 0 && (
+                                            <button
+                                                onClick={() => {
+                                                    setTestToPrint(test);
+                                                    setTimeout(() => window.print(), 50);
+                                                }}
+                                                className="hover-lift"
+                                                title="Print paper worksheet"
+                                                style={{
+                                                    background: 'rgba(79, 70, 229, 0.08)',
+                                                    color: 'var(--primary)',
+                                                    border: '1px solid rgba(79, 70, 229, 0.2)',
+                                                    cursor: 'pointer',
+                                                    padding: '0.3rem 0.65rem',
+                                                    borderRadius: '1rem',
+                                                    fontWeight: 600,
+                                                    fontSize: '0.75rem',
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    gap: '0.25rem'
+                                                }}
+                                            >
+                                                <Printer size={13} /> Worksheet
+                                            </button>
+                                        )}
+
+                                        {test.status === 'completed' ? (
+                                            <button onClick={() => setReviewTestId(test.id)} style={{
+                                                background: 'rgba(16,185,129,0.1)', color: 'var(--secondary)', border: 'none', cursor: 'pointer',
+                                                padding: '0.3rem 0.75rem', borderRadius: '1rem', fontWeight: 600, fontSize: '0.78rem',
+                                                display: 'flex', alignItems: 'center', gap: '0.3rem'
+                                            }} className="hover-lift">
+                                                Review {test.score}% {test.roughWorkEvaluation ? '• ✍️' : ''}
+                                            </button>
+                                        ) : (
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                                                <span style={{
+                                                    background: test.questions.length > 0 ? 'rgba(79,70,229,0.1)' : 'rgba(245,158,11,0.1)',
+                                                    color: test.questions.length > 0 ? 'var(--primary)' : '#d97706',
+                                                    padding: '0.25rem 0.65rem', borderRadius: '1rem', fontWeight: 600, fontSize: '0.78rem'
+                                                }}>
+                                                    {test.questions.length > 0 ? 'Ready ✓' : 'Draft'}
+                                                </span>
+                                                {test.questions.length > 0 && (
+                                                    <button
+                                                        onClick={() => setTakeTestInlineId(test.id)}
+                                                        className="hover-lift"
+                                                        style={{
+                                                            background: 'var(--primary)',
+                                                            color: 'white',
+                                                            border: 'none',
+                                                            cursor: 'pointer',
+                                                            padding: '0.3rem 0.65rem',
+                                                            borderRadius: '1rem',
+                                                            fontWeight: 600,
+                                                            fontSize: '0.75rem',
+                                                            display: 'flex',
+                                                            alignItems: 'center',
+                                                            gap: '0.25rem'
+                                                        }}
+                                                    >
+                                                        <Play size={11} fill="white" /> Take
+                                                    </button>
+                                                )}
+                                            </div>
+                                        )}
+                                        {/* Allow deleting empty drafts */}
+                                        {test.questions.length === 0 && test.status !== 'completed' && (
+                                            <button onClick={() => deleteTest(test.id)} title="Delete draft"
+                                                style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', padding: '0.25rem' }}>
+                                                <Trash2 size={14} />
+                                            </button>
+                                        )}
+                                    </div>
+                                </div>
+                            ))}
+                            {filteredTests.length === 0 && (
+                                <p style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '1.5rem 0', margin: 0, fontSize: '0.85rem' }}>No practice tests yet. Use the generator above.</p>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* TAB PANEL 2: ACTIVITY & HISTORY ARCHIVE */}
+            {activeTab === 'history' && (
+                <div id="panel-history" role="tabpanel" aria-labelledby="tab-history" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+                    <div className="card" style={{ padding: '1.25rem' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.75rem' }}>
+                            <div>
+                                <h2 style={{ fontSize: '1.25rem', margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                    <History size={20} color="var(--primary)" /> Activity & History Archive
+                                </h2>
+                                <p style={{ margin: '0.2rem 0 0', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                                    Track full historical timeline of uploaded homework, completed submissions, generated tests, and test results.
+                                </p>
+                            </div>
+
+                            {/* Search bar */}
+                            <div style={{ position: 'relative', minWidth: '220px', flex: 1, maxWidth: '320px' }}>
+                                <Search size={15} style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+                                <input
+                                    type="text"
+                                    value={historySearchQuery}
+                                    onChange={e => setHistorySearchQuery(e.target.value)}
+                                    placeholder="Search history by title, subject..."
+                                    style={{
+                                        width: '100%',
+                                        padding: '0.45rem 0.75rem 0.45rem 2.2rem',
+                                        borderRadius: '2rem',
+                                        border: '1px solid var(--border)',
+                                        background: 'var(--surface)',
+                                        fontSize: '0.82rem'
+                                    }}
+                                />
+                                {historySearchQuery && (
+                                    <button
+                                        type="button"
+                                        onClick={() => setHistorySearchQuery('')}
+                                        style={{ position: 'absolute', right: '0.6rem', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 0 }}
+                                    >
+                                        <X size={14} />
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Filter pills */}
+                        <div className="history-filter-scroll" role="tablist" aria-label="History categories">
+                            <button
+                                type="button"
+                                className={`history-filter-btn ${historyFilter === 'all' ? 'active' : ''}`}
+                                onClick={() => setHistoryFilter('all')}
+                            >
+                                All Activity ({filteredHomework.length + filteredTests.length})
+                            </button>
+                            <button
+                                type="button"
+                                className={`history-filter-btn ${historyFilter === 'uploaded_homework' ? 'active' : ''}`}
+                                onClick={() => setHistoryFilter('uploaded_homework')}
+                            >
+                                📲 Uploaded Homework ({historyUploadedHw.length})
+                            </button>
+                            <button
+                                type="button"
+                                className={`history-filter-btn ${historyFilter === 'completed_homework' ? 'active' : ''}`}
+                                onClick={() => setHistoryFilter('completed_homework')}
+                            >
+                                ✅ Completed Homework ({historyCompletedHw.length})
+                            </button>
+                            <button
+                                type="button"
+                                className={`history-filter-btn ${historyFilter === 'generated_tests' ? 'active' : ''}`}
+                                onClick={() => setHistoryFilter('generated_tests')}
+                            >
+                                ⚡ Generated Tests ({historyGeneratedTests.length})
+                            </button>
+                            <button
+                                type="button"
+                                className={`history-filter-btn ${historyFilter === 'completed_tests' ? 'active' : ''}`}
+                                onClick={() => setHistoryFilter('completed_tests')}
+                            >
+                                📝 Completed Tests ({historyCompletedTests.length})
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* HISTORY CONTENT CARDS */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                        {/* 1. UPLOADED HOMEWORK SECTION (shown when 'all' or 'uploaded_homework') */}
+                        {(historyFilter === 'all' || historyFilter === 'uploaded_homework') && (
+                            <div className="card">
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                                    <h3 style={{ fontSize: '1.1rem', margin: 0, display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                                        <Smartphone size={18} color="var(--primary)" /> Uploaded School Homework ({historyUploadedHw.length})
+                                    </h3>
+                                    {historyFilter === 'all' && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setHistoryFilter('uploaded_homework')}
+                                            style={{ background: 'none', border: 'none', color: 'var(--primary)', fontSize: '0.78rem', fontWeight: 600, cursor: 'pointer' }}
+                                        >
+                                            View Only Uploads →
+                                        </button>
+                                    )}
+                                </div>
+
+                                {historyUploadedHw.length === 0 ? (
+                                    <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '0.85rem', textAlign: 'center', padding: '1rem 0' }}>
+                                        No uploaded homework found.
+                                    </p>
+                                ) : (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                                        {historyUploadedHw.map(hw => {
+                                            const sourceClass = hw.source === 'whatsapp' ? 'source-pill-whatsapp' : hw.source === 'teams' ? 'source-pill-teams' : 'source-pill-diary';
+                                            const sourceLabel = hw.source === 'whatsapp' ? '🟢 WhatsApp' : hw.source === 'teams' ? '🟣 Teams' : hw.source === 'diary' ? '📔 Diary' : '✏️ Manual';
+                                            const isDone = hw.status === 'verified' || hw.submissionStatus === 'verified_complete';
+
+                                            return (
+                                                <div key={hw.id} className="history-item-card">
+                                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.5rem' }}>
+                                                        <div>
+                                                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem', flexWrap: 'wrap' }}>
+                                                                <span className={`source-pill ${sourceClass}`}>{sourceLabel}</span>
+                                                                <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-muted)' }}>{hw.subject}</span>
+                                                                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>• {hw.childName}</span>
+                                                                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>• {new Date(hw.createdAt).toLocaleDateString()}</span>
+                                                            </div>
+                                                            <h4 style={{ margin: '0 0 0.2rem', fontSize: '1rem', fontWeight: 700 }}>{hw.title}</h4>
+                                                            {hw.description && <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--text-muted)' }}>{hw.description}</p>}
+                                                        </div>
+
+                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                                            {isDone ? (
+                                                                <span className="status-badge badge-verified">✓ Solved & Verified</span>
+                                                            ) : (
+                                                                <span className="status-badge badge-pending">⏳ Pending Student Notebook</span>
+                                                            )}
+                                                        </div>
+                                                    </div>
+
+                                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem', paddingTop: '0.5rem', borderTop: '1px solid var(--border)' }}>
+                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                                            {hw.originalFiles && hw.originalFiles[0] && (
+                                                                <img
+                                                                    src={hw.originalFiles[0]}
+                                                                    alt="Uploaded sheet"
+                                                                    onClick={() => setViewingFullImage(hw.originalFiles![0])}
+                                                                    style={{ width: '38px', height: '38px', objectFit: 'cover', borderRadius: '4px', cursor: 'pointer', border: '1px solid var(--border)' }}
+                                                                />
+                                                            )}
+                                                            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                                                Due: <strong>{hw.dueDate}</strong>
+                                                            </span>
+                                                        </div>
+
+                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                                                            {hw.verificationResult && (
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => setViewingHomework(hw)}
+                                                                    className="btn btn-secondary"
+                                                                    style={{ padding: '0.3rem 0.65rem', fontSize: '0.75rem' }}
+                                                                >
+                                                                    <Eye size={12} /> View AI Report
+                                                                </button>
+                                                            )}
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => {
+                                                                    if (window.confirm('Delete this homework from history?')) {
+                                                                        deleteDailyHomework(hw.id);
+                                                                    }
+                                                                }}
+                                                                style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', padding: '0.25rem' }}
+                                                                title="Delete"
+                                                            >
+                                                                <Trash2 size={14} />
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {/* 2. COMPLETED HOMEWORK SECTION (shown when 'all' or 'completed_homework') */}
+                        {(historyFilter === 'all' || historyFilter === 'completed_homework') && (
+                            <div className="card">
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                                    <h3 style={{ fontSize: '1.1rem', margin: 0, display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                                        <CheckCircle size={18} color="var(--secondary)" /> Completed & Verified Homework ({historyCompletedHw.length})
+                                    </h3>
+                                    {historyFilter === 'all' && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setHistoryFilter('completed_homework')}
+                                            style={{ background: 'none', border: 'none', color: 'var(--primary)', fontSize: '0.78rem', fontWeight: 600, cursor: 'pointer' }}
+                                        >
+                                            View Only Completed →
+                                        </button>
+                                    )}
+                                </div>
+
+                                {historyCompletedHw.length === 0 ? (
+                                    <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '0.85rem', textAlign: 'center', padding: '1rem 0' }}>
+                                        No completed homework submissions yet.
+                                    </p>
+                                ) : (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                                        {historyCompletedHw.map(hw => (
+                                            <div key={hw.id} className="history-item-card" style={{ borderLeft: '3px solid #10b981' }}>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.5rem' }}>
+                                                    <div>
+                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
+                                                            <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--primary)' }}>{hw.subject}</span>
+                                                            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>• {hw.childName}</span>
+                                                            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>• Completed {hw.submittedAt ? new Date(hw.submittedAt).toLocaleDateString() : 'Recently'}</span>
+                                                        </div>
+                                                        <h4 style={{ margin: '0 0 0.2rem', fontSize: '1rem', fontWeight: 700 }}>{hw.title}</h4>
+                                                        {hw.verificationResult?.summary && (
+                                                            <p style={{ margin: 0, fontSize: '0.82rem', color: 'var(--text-main)', lineHeight: '1.4' }}>
+                                                                {hw.verificationResult.summary}
+                                                            </p>
+                                                        )}
+                                                    </div>
+
+                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                                        <span style={{
+                                                            background: (hw.verificationResult?.completenessScore || 90) >= 80 ? 'rgba(16, 185, 129, 0.12)' : 'rgba(245, 158, 11, 0.12)',
+                                                            color: (hw.verificationResult?.completenessScore || 90) >= 80 ? '#047857' : '#b45309',
+                                                            border: `1px solid ${(hw.verificationResult?.completenessScore || 90) >= 80 ? 'rgba(16, 185, 129, 0.3)' : 'rgba(245, 158, 11, 0.3)'}`,
+                                                            padding: '0.25rem 0.65rem',
+                                                            borderRadius: '1rem',
+                                                            fontWeight: 800,
+                                                            fontSize: '0.8rem'
+                                                        }}>
+                                                            {hw.verificationResult?.completenessScore || 90}% Completeness
+                                                        </span>
+                                                    </div>
+                                                </div>
+
+                                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem', paddingTop: '0.5rem', borderTop: '1px solid var(--border)' }}>
+                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+                                                        {hw.originalFiles && hw.originalFiles[0] && (
+                                                            <img
+                                                                src={hw.originalFiles[0]}
+                                                                alt="Original"
+                                                                onClick={() => setViewingFullImage(hw.originalFiles![0])}
+                                                                style={{ width: '38px', height: '38px', objectFit: 'cover', borderRadius: '4px', cursor: 'pointer', border: '1px solid var(--border)' }}
+                                                                title="Teacher assignment"
+                                                            />
+                                                        )}
+                                                        {hw.studentSubmissionFiles && hw.studentSubmissionFiles[0] && (
+                                                            <img
+                                                                src={hw.studentSubmissionFiles[0]}
+                                                                alt="Student solved notebook"
+                                                                onClick={() => setViewingFullImage(hw.studentSubmissionFiles![0])}
+                                                                style={{ width: '38px', height: '38px', objectFit: 'cover', borderRadius: '4px', cursor: 'pointer', border: '2px solid #10b981' }}
+                                                                title="Student solved notebook"
+                                                            />
+                                                        )}
+                                                        <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                                                            {hw.verificationResult?.completedQuestions?.length || 0} sums solved
+                                                        </span>
+                                                    </div>
+
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setViewingHomework(hw)}
+                                                        className="hover-lift"
+                                                        style={{
+                                                            background: 'linear-gradient(135deg, var(--primary) 0%, #6366f1 100%)',
+                                                            color: 'white',
+                                                            border: 'none',
+                                                            borderRadius: 'var(--radius-sm)',
+                                                            padding: '0.35rem 0.75rem',
+                                                            fontWeight: 600,
+                                                            fontSize: '0.76rem',
+                                                            cursor: 'pointer',
+                                                            display: 'flex',
+                                                            alignItems: 'center',
+                                                            gap: '0.35rem'
+                                                        }}
+                                                    >
+                                                        <Eye size={12} /> View Full AI Verification Report
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {/* 3. GENERATED PRACTICE TESTS SECTION (shown when 'all' or 'generated_tests') */}
+                        {(historyFilter === 'all' || historyFilter === 'generated_tests') && (
+                            <div className="card">
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                                    <h3 style={{ fontSize: '1.1rem', margin: 0, display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                                        <Sparkles size={18} color="var(--primary)" /> Generated Practice Tests ({historyGeneratedTests.length})
+                                    </h3>
+                                    {historyFilter === 'all' && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setHistoryFilter('generated_tests')}
+                                            style={{ background: 'none', border: 'none', color: 'var(--primary)', fontSize: '0.78rem', fontWeight: 600, cursor: 'pointer' }}
+                                        >
+                                            View Only Generated Tests →
+                                        </button>
+                                    )}
+                                </div>
+
+                                {historyGeneratedTests.length === 0 ? (
+                                    <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '0.85rem', textAlign: 'center', padding: '1rem 0' }}>
+                                        No practice tests generated yet.
+                                    </p>
+                                ) : (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                                        {historyGeneratedTests.map(test => (
+                                            <div key={test.id} className="history-item-card">
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.5rem' }}>
+                                                    <div>
+                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
+                                                            <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--primary)' }}>{test.subject}</span>
+                                                            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>• {test.questions.length} Questions</span>
+                                                            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>• {test.duration}</span>
+                                                        </div>
+                                                        <h4 style={{ margin: '0 0 0.2rem', fontSize: '1rem', fontWeight: 700 }}>{test.title}</h4>
+                                                        <p style={{ margin: 0, fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                                            {test.status === 'completed'
+                                                                ? `Completed ${test.completedAt ? new Date(test.completedAt).toLocaleDateString() : ''}`
+                                                                : test.dueDate ? `Due ${new Date(test.dueDate).toLocaleDateString()}` : 'Awaiting student'}
+                                                        </p>
+                                                    </div>
+
+                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                                                        {test.questions.length > 0 && (
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => {
+                                                                    setTestToPrint(test);
+                                                                    setTimeout(() => window.print(), 50);
+                                                                }}
+                                                                className="hover-lift"
+                                                                style={{
+                                                                    background: 'rgba(79, 70, 229, 0.08)',
+                                                                    color: 'var(--primary)',
+                                                                    border: '1px solid rgba(79, 70, 229, 0.2)',
+                                                                    cursor: 'pointer',
+                                                                    padding: '0.3rem 0.65rem',
+                                                                    borderRadius: '1rem',
+                                                                    fontWeight: 600,
+                                                                    fontSize: '0.75rem',
+                                                                    display: 'flex',
+                                                                    alignItems: 'center',
+                                                                    gap: '0.25rem'
+                                                                }}
+                                                            >
+                                                                <Printer size={12} /> Worksheet
+                                                            </button>
+                                                        )}
+
+                                                        {test.status === 'completed' ? (
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => setReviewTestId(test.id)}
+                                                                style={{
+                                                                    background: 'rgba(16,185,129,0.1)', color: 'var(--secondary)', border: 'none', cursor: 'pointer',
+                                                                    padding: '0.3rem 0.75rem', borderRadius: '1rem', fontWeight: 600, fontSize: '0.78rem'
+                                                                }}
+                                                                className="hover-lift"
+                                                            >
+                                                                Review {test.score}%
+                                                            </button>
+                                                        ) : (
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => setTakeTestInlineId(test.id)}
+                                                                className="btn btn-primary"
+                                                                style={{ padding: '0.3rem 0.65rem', fontSize: '0.75rem' }}
+                                                            >
+                                                                <Play size={11} fill="white" /> Take Test
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {/* 4. COMPLETED PRACTICE TESTS SECTION (shown when 'all' or 'completed_tests') */}
+                        {(historyFilter === 'all' || historyFilter === 'completed_tests') && (
+                            <div className="card">
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                                    <h3 style={{ fontSize: '1.1rem', margin: 0, display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                                        <Award size={18} color="#f59e0b" /> Completed Practice Tests ({historyCompletedTests.length})
+                                    </h3>
+                                    {historyFilter === 'all' && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setHistoryFilter('completed_tests')}
+                                            style={{ background: 'none', border: 'none', color: 'var(--primary)', fontSize: '0.78rem', fontWeight: 600, cursor: 'pointer' }}
+                                        >
+                                            View Only Completed Tests →
+                                        </button>
+                                    )}
+                                </div>
+
+                                {historyCompletedTests.length === 0 ? (
+                                    <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '0.85rem', textAlign: 'center', padding: '1rem 0' }}>
+                                        No completed tests recorded yet.
+                                    </p>
+                                ) : (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                                        {historyCompletedTests.map(test => (
+                                            <div key={test.id} className="history-item-card" style={{ borderLeft: '3px solid #6366f1' }}>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.5rem' }}>
+                                                    <div>
+                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
+                                                            <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--primary)' }}>{test.subject}</span>
+                                                            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>• Completed {test.completedAt ? new Date(test.completedAt).toLocaleDateString() : 'Recently'}</span>
+                                                        </div>
+                                                        <h4 style={{ margin: '0 0 0.2rem', fontSize: '1rem', fontWeight: 700 }}>{test.title}</h4>
+                                                        {test.roughWorkEvaluation && (
+                                                            <p style={{ margin: 0, fontSize: '0.78rem', color: 'var(--secondary)', fontWeight: 600 }}>
+                                                                ✍️ Handwriting & Rough Work Accuracy: {test.roughWorkEvaluation.accuracyScore}%
+                                                            </p>
+                                                        )}
+                                                    </div>
+
+                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                                        <span style={{
+                                                            background: (test.score || 0) >= 80 ? 'rgba(16, 185, 129, 0.12)' : 'rgba(245, 158, 11, 0.12)',
+                                                            color: (test.score || 0) >= 80 ? '#047857' : '#b45309',
+                                                            border: `1px solid ${(test.score || 0) >= 80 ? 'rgba(16, 185, 129, 0.3)' : 'rgba(245, 158, 11, 0.3)'}`,
+                                                            padding: '0.25rem 0.65rem',
+                                                            borderRadius: '1rem',
+                                                            fontWeight: 800,
+                                                            fontSize: '0.85rem'
+                                                        }}>
+                                                            Score: {test.score}%
+                                                        </span>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setReviewTestId(test.id)}
+                                                            className="hover-lift"
+                                                            style={{
+                                                                background: 'var(--surface-hover)',
+                                                                color: 'var(--text-main)',
+                                                                border: '1px solid var(--border)',
+                                                                borderRadius: 'var(--radius-sm)',
+                                                                padding: '0.35rem 0.75rem',
+                                                                fontWeight: 600,
+                                                                fontSize: '0.78rem',
+                                                                cursor: 'pointer'
+                                                            }}
+                                                        >
+                                                            Full Review →
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {/* TAB PANEL 3: ANALYTICS & TOPIC MASTERY */}
+            {activeTab === 'analytics' && (
+                <div id="panel-analytics" role="tabpanel" aria-labelledby="tab-analytics" style={{ display: 'flex', flexDirection: 'column', gap: '1.75rem' }}>
                     {/* Subject Tiles */}
                     <div className="card">
-                        <h2 style={{ fontSize: '1.25rem', marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <h2 style={{ fontSize: '1.25rem', marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                             <Book size={20} color="var(--primary)" /> Major Subjects
                         </h2>
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '1rem' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '0.85rem' }}>
                             {displaySubjects.map(subject => (
-                                <div key={subject} style={{ padding: '1.25rem', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', textAlign: 'center', transition: 'var(--transition)', cursor: 'pointer' }} className="hover-lift">
-                                    <div style={{ background: 'var(--surface-hover)', width: '48px', height: '48px', margin: '0 auto 0.75rem', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--primary)' }}>
-                                        <Book size={22} />
+                                <div key={subject} style={{ padding: '1rem', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', textAlign: 'center' }} className="hover-lift">
+                                    <div style={{ background: 'var(--surface-hover)', width: '42px', height: '42px', margin: '0 auto 0.5rem', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--primary)' }}>
+                                        <Book size={20} />
                                     </div>
-                                    <h4 style={{ margin: 0, fontWeight: 600, fontSize: '0.9rem' }}>{subject}</h4>
-                                    <p style={{ margin: '0.25rem 0 0', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                                    <h4 style={{ margin: 0, fontWeight: 600, fontSize: '0.88rem' }}>{subject}</h4>
+                                    <p style={{ margin: '0.2rem 0 0', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                                         {tests.filter(t => t.subject === subject && t.status === 'completed').length} completed
                                     </p>
                                 </div>
@@ -457,15 +1916,15 @@ const ParentDashboard = () => {
 
                     {/* Performance Chart */}
                     <div className="card">
-                        <h2 style={{ fontSize: '1.25rem', marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                            <BarChart3 size={20} color="var(--primary)" /> Performance Overview
+                        <h2 style={{ fontSize: '1.25rem', marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                            <BarChart3 size={20} color="var(--primary)" /> Performance Trend
                         </h2>
-                        <div style={{ height: '260px', width: '100%' }}>
+                        <div style={{ height: '240px', width: '100%' }}>
                             <ResponsiveContainer width="100%" height="100%">
                                 <BarChart data={chartData.length > 0 ? chartData : [{ name: 'No Data', score: 0 }]}>
                                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
-                                    <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: 'var(--text-muted)' }} />
-                                    <YAxis domain={[0, 100]} axisLine={false} tickLine={false} tick={{ fill: 'var(--text-muted)' }} dx={-10} />
+                                    <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: 'var(--text-muted)', fontSize: 12 }} />
+                                    <YAxis domain={[0, 100]} axisLine={false} tickLine={false} tick={{ fill: 'var(--text-muted)', fontSize: 12 }} dx={-10} />
                                     <Tooltip cursor={{ fill: 'var(--surface-hover)' }} contentStyle={{ borderRadius: 'var(--radius-md)', border: 'none', boxShadow: 'var(--shadow-md)' }} />
                                     <Bar dataKey="score" fill="var(--primary)" radius={[4, 4, 0, 0]} />
                                 </BarChart>
@@ -473,7 +1932,7 @@ const ParentDashboard = () => {
                         </div>
                     </div>
 
-                    {/* Topic Mastery & Weak Spot Analytics (Phase 2) */}
+                    {/* Topic Mastery & Weak Spots */}
                     <div className="card">
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem', flexWrap: 'wrap', gap: '0.5rem' }}>
                             <div>
@@ -481,7 +1940,7 @@ const ParentDashboard = () => {
                                     <TrendingUp size={20} color="var(--primary)" /> Topic Mastery & Weak Spots
                                 </h2>
                                 <p style={{ margin: '0.25rem 0 0', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
-                                    Track concept understanding and learning gaps across topics.
+                                    Track understanding and auto-generate remedial practice drills
                                 </p>
                             </div>
                             {user?.subscriptionTier === 'free' && (
@@ -589,11 +2048,10 @@ const ParentDashboard = () => {
                                     );
                                 })}
 
-                                {/* Pro Teaser Card for Free Tier */}
                                 {user?.subscriptionTier === 'free' && (
                                     <div style={{
                                         marginTop: '0.75rem',
-                                        padding: '1.25rem',
+                                        padding: '1.15rem',
                                         borderRadius: 'var(--radius-md)',
                                         background: 'linear-gradient(135deg, rgba(79, 70, 229, 0.08) 0%, rgba(129, 140, 248, 0.04) 100%)',
                                         border: '1px dashed var(--primary)',
@@ -626,437 +2084,249 @@ const ParentDashboard = () => {
                             </div>
                         )}
                     </div>
-
-                    {/* Recent Assignments */}
-                    <div className="card" id="tests-list-section">
-                        <h2 style={{ fontSize: '1.25rem', marginBottom: '1.5rem' }}>Recent Assignments</h2>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                            {tests.slice(0, 5).map((test) => (
-                                <div key={test.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '1rem', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', gap: '0.5rem' }}>
-                                    <div style={{ flex: 1, minWidth: 0 }}>
-                                        <h4 style={{ fontWeight: 600, margin: '0 0 0.25rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{test.title}</h4>
-                                        <p style={{ color: 'var(--text-muted)', margin: 0, fontSize: '0.8rem' }}>
-                                            {test.questions.length > 0 ? `${test.questions.length} questions` : 'No questions yet'} •{' '}
-                                            {test.status === 'completed' 
-                                                ? `Done ${test.completedAt ? new Date(test.completedAt).toLocaleDateString() : ''}` 
-                                                : test.dueDate ? `Due ${new Date(test.dueDate).toLocaleDateString()}` : 'Pending student'}
-                                        </p>
-                                    </div>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexShrink: 0 }}>
-                                        {/* Print Worksheet Button */}
-                                        {test.questions.length > 0 && (
-                                            <button
-                                                onClick={() => {
-                                                    setTestToPrint(test);
-                                                    setTimeout(() => window.print(), 50);
-                                                }}
-                                                className="hover-lift"
-                                                title="Print paper worksheet"
-                                                style={{
-                                                    background: 'rgba(79, 70, 229, 0.08)',
-                                                    color: 'var(--primary)',
-                                                    border: '1px solid rgba(79, 70, 229, 0.2)',
-                                                    cursor: 'pointer',
-                                                    padding: '0.2rem 0.55rem',
-                                                    borderRadius: '1rem',
-                                                    fontWeight: 600,
-                                                    fontSize: '0.74rem',
-                                                    display: 'flex',
-                                                    alignItems: 'center',
-                                                    gap: '0.25rem'
-                                                }}
-                                            >
-                                                <Printer size={12} /> Worksheet
-                                            </button>
-                                        )}
-
-                                        {test.status === 'completed' ? (
-                                            <button onClick={() => setReviewTestId(test.id)} style={{
-                                                background: 'rgba(16,185,129,0.1)', color: 'var(--secondary)', border: 'none', cursor: 'pointer',
-                                                padding: '0.2rem 0.65rem', borderRadius: '1rem', fontWeight: 600, fontSize: '0.78rem', transition: 'var(--transition)',
-                                                display: 'flex', alignItems: 'center', gap: '0.3rem'
-                                            }} className="hover-lift">
-                                                Review {test.score}% {test.roughWorkEvaluation ? '• ✍️' : ''}
-                                            </button>
-                                        ) : (
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-                                                <span style={{
-                                                    background: test.questions.length > 0 ? 'rgba(79,70,229,0.1)' : 'rgba(245,158,11,0.1)',
-                                                    color: test.questions.length > 0 ? 'var(--primary)' : '#d97706',
-                                                    padding: '0.2rem 0.65rem', borderRadius: '1rem', fontWeight: 600, fontSize: '0.78rem'
-                                                }}>
-                                                    {test.questions.length > 0 ? 'Ready ✓' : 'Draft'}
-                                                </span>
-                                                {test.questions.length > 0 && (
-                                                    <button
-                                                        onClick={() => setTakeTestInlineId(test.id)}
-                                                        className="hover-lift"
-                                                        style={{
-                                                            background: 'var(--primary)',
-                                                            color: 'white',
-                                                            border: 'none',
-                                                            cursor: 'pointer',
-                                                            padding: '0.2rem 0.6rem',
-                                                            borderRadius: '1rem',
-                                                            fontWeight: 600,
-                                                            fontSize: '0.75rem',
-                                                            display: 'flex',
-                                                            alignItems: 'center',
-                                                            gap: '0.25rem'
-                                                        }}
-                                                    >
-                                                        <Play size={11} fill="white" /> Take
-                                                    </button>
-                                                )}
-                                            </div>
-                                        )}
-                                        {/* Allow deleting empty drafts */}
-                                        {test.questions.length === 0 && test.status !== 'completed' && (
-                                            <button onClick={() => deleteTest(test.id)} title="Delete draft"
-                                                style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', padding: '0.25rem', borderRadius: '4px' }}>
-                                                <Trash2 size={14} />
-                                            </button>
-                                        )}
-                                    </div>
-                                </div>
-                            ))}
-                            {tests.length === 0 && (
-                                <p style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '1rem 0' }}>No assignments yet. Upload homework to get started.</p>
-                            )}
-                        </div>
-                    </div>
                 </div>
+            )}
 
-                {/* Upload Sidebar */}
-                <div>
-                    <div className="card" style={{ position: 'sticky', top: '2rem' }}>
-                        {/* Invite Code - Always Visible */}
-                        {user?.inviteCode && (
-                            <div style={{ background: 'var(--surface-hover)', padding: '1rem', borderRadius: 'var(--radius-md)', marginBottom: '1.5rem', border: '1px solid var(--border)' }}>
-                                <p style={{ margin: '0 0 0.25rem', fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Child's Invite Code</p>
-                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                                    <span style={{ fontSize: '1.25rem', fontWeight: 700, letterSpacing: '2px', color: 'var(--primary)' }}>{user.inviteCode}</span>
-                                    <button
-                                        onClick={() => {
-                                            navigator.clipboard.writeText(user.inviteCode!);
-                                            alert('Invite code copied to clipboard!');
-                                        }}
-                                        style={{ background: 'none', border: 'none', color: 'var(--primary)', fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer' }}
-                                    >
-                                        Copy
-                                    </button>
-                                </div>
-                                <p style={{ margin: '0.5rem 0 0', fontSize: '0.7rem', color: 'var(--text-muted)' }}>Share this with your child to link their account.</p>
-                            </div>
-                        )}
-
-                        {generateSuccess ? (
-                            <div style={{ textAlign: 'center', padding: '2rem 0' }}>
-                                <div style={{ background: 'rgba(16, 185, 129, 0.1)', width: '64px', height: '64px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem', color: 'var(--secondary)' }}>
-                                    <CheckCircle size={32} />
-                                </div>
-                                <h3 style={{ marginBottom: '0.5rem' }}>Test Generated! 🎉</h3>
-                                <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem', marginBottom: '1.5rem' }}>
-                                    Your custom test is ready.
-                                </p>
-                                
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginBottom: '1.5rem' }}>
-                                    <button className="btn btn-primary" onClick={() => window.print()} style={{ width: '100%', justifyContent: 'center' }}>
-                                        <Printer size={16} /> Download as PDF
-                                    </button>
-                                    <button className="btn btn-secondary" onClick={() => setTakeTestInlineId(generatedTestId)} style={{ width: '100%', justifyContent: 'center' }}>
-                                        <Play size={16} /> Take Test Online
-                                    </button>
-                                </div>
-
-                                <button onClick={resetUpload} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', textDecoration: 'underline', cursor: 'pointer', fontSize: '0.875rem' }}>
-                                    Create Another Test
-                                </button>
-                            </div>
-                        ) : (
-                            <>
-                                <h2 style={{ fontSize: '1.25rem', marginBottom: '0.5rem' }}>Generate a Test</h2>
-                                <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem', marginBottom: '1.5rem' }}>
-                                    Upload homework images, pick a subject & difficulty, then let AI generate a test.
-                                </p>
-
-                                <div style={{ marginBottom: '1.25rem' }}>
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
-                                        <label style={{ fontWeight: 500, fontSize: '0.875rem' }}>Subject</label>
-                                        <Link to="/profile" style={{ fontSize: '0.78rem', color: 'var(--primary)', textDecoration: 'none' }}>
-                                            Edit Tracked Subjects →
-                                        </Link>
-                                    </div>
-
-                                    {/* AI Auto-Detected Subject Banner */}
-                                    {isDetectingSubject && (
-                                        <div style={{ padding: '0.5rem 0.75rem', background: 'rgba(79, 70, 229, 0.08)', borderRadius: 'var(--radius-sm)', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem', color: 'var(--primary)' }}>
-                                            <Sparkles size={14} className="animate-spin" />
-                                            <span>AI analyzing uploaded worksheet to recognize subject...</span>
-                                        </div>
-                                    )}
-
-                                    {detectedSubject && !isDetectingSubject && (
-                                        <div style={{ padding: '0.5rem 0.75rem', background: 'rgba(16, 185, 129, 0.1)', borderRadius: 'var(--radius-sm)', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.8rem', color: '#047857' }}>
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                                                <Sparkles size={14} color="#10B981" />
-                                                <span>✨ Auto-recognized: <strong>{detectedSubject}</strong></span>
-                                            </div>
-                                            <button 
-                                                type="button" 
-                                                onClick={() => setDetectedSubject(null)}
-                                                style={{ background: 'none', border: 'none', color: '#047857', cursor: 'pointer', fontSize: '0.75rem', textDecoration: 'underline' }}
-                                            >
-                                                Dismiss
-                                            </button>
-                                        </div>
-                                    )}
-
-                                    {!isCustomSubject ? (
-                                        <div style={{ display: 'flex', gap: '0.5rem' }}>
-                                            <select 
-                                                value={selectedSubject} 
-                                                onChange={e => {
-                                                    if (e.target.value === '__CUSTOM__') {
-                                                        setIsCustomSubject(true);
-                                                        setCustomSubjectText('');
-                                                    } else {
-                                                        setSelectedSubject(e.target.value);
-                                                    }
-                                                }}
-                                                style={{ flex: 1, padding: '0.65rem 0.85rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)', background: 'var(--surface)', fontSize: '0.95rem' }}
-                                            >
-                                                {/* 1. Tracked Subjects */}
-                                                <optgroup label="📌 Tracked Subjects">
-                                                    {displaySubjects.map(s => <option key={s} value={s}>{s}</option>)}
-                                                </optgroup>
-
-                                                {/* 2. Other Curriculum Subjects */}
-                                                <optgroup label="📚 More Curriculum Subjects">
-                                                    {SUBJECTS.filter(s => !displaySubjects.includes(s)).map(s => (
-                                                        <option key={s} value={s}>{s}</option>
-                                                    ))}
-                                                </optgroup>
-
-                                                {/* 3. Option to enter Custom */}
-                                                <optgroup label="➕ Custom">
-                                                    <option value="__CUSTOM__">+ Add Custom Subject...</option>
-                                                </optgroup>
-                                            </select>
-                                            <button
-                                                type="button"
-                                                onClick={() => setIsCustomSubject(true)}
-                                                className="btn btn-secondary"
-                                                style={{ padding: '0.65rem 0.85rem', fontSize: '0.82rem', whiteSpace: 'nowrap' }}
-                                                title="Type a custom subject"
-                                            >
-                                                + Custom
-                                            </button>
-                                        </div>
-                                    ) : (
-                                        <div style={{ display: 'flex', gap: '0.5rem' }}>
-                                            <input
-                                                type="text"
-                                                className="input"
-                                                placeholder="Enter custom subject (e.g. Coding, Art, French)..."
-                                                value={customSubjectText}
-                                                onChange={e => {
-                                                    setCustomSubjectText(e.target.value);
-                                                    setSelectedSubject(e.target.value);
-                                                }}
-                                                autoFocus
-                                                style={{ flex: 1, padding: '0.65rem 0.85rem' }}
-                                            />
-                                            <button
-                                                type="button"
-                                                onClick={() => {
-                                                    setIsCustomSubject(false);
-                                                    if (!customSubjectText.trim()) {
-                                                        setSelectedSubject(displaySubjects[0] || 'Math');
-                                                    }
-                                                }}
-                                                className="btn btn-secondary"
-                                                style={{ padding: '0.65rem 0.85rem', fontSize: '0.82rem' }}
-                                            >
-                                                Cancel
-                                            </button>
-                                        </div>
-                                    )}
-                                </div>
-
-                                <div style={{ marginBottom: '1.25rem' }}>
-                                    <label style={{ display: 'block', fontWeight: 500, fontSize: '0.875rem', marginBottom: '0.4rem' }}>Due By (Optional)</label>
-                                    <input type="datetime-local" value={dueDate} onChange={e => setDueDate(e.target.value)}
-                                        style={{ width: '100%', padding: '0.65rem 0.85rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)', background: 'var(--surface)', fontSize: '0.95rem' }} />
-                                </div>
-
-                                <div style={{ marginBottom: '1.25rem' }}>
-                                    <label style={{ display: 'block', fontWeight: 500, fontSize: '0.875rem', marginBottom: '0.4rem' }}>Difficulty</label>
-                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
-                                        {(['basic', 'intermediate', 'advanced'] as Difficulty[]).map(d => (
-                                            <button key={d} onClick={() => setDifficulty(d)}
-                                                style={{
-                                                    padding: '0.75rem 1rem', borderRadius: 'var(--radius-md)', border: `2px solid ${difficulty === d ? 'var(--primary)' : 'var(--border)'}`,
-                                                    background: difficulty === d ? 'rgba(79,70,229,0.08)' : 'transparent',
-                                                    color: difficulty === d ? 'var(--primary)' : 'var(--text-muted)',
-                                                    fontWeight: difficulty === d ? 600 : 500, cursor: 'pointer', fontSize: '0.9rem', transition: 'var(--transition)', textTransform: 'capitalize',
-                                                    textAlign: 'left'
-                                                }}>
-                                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                                                    <span style={{
-                                                        width: '10px', height: '10px', borderRadius: '50%',
-                                                        background: d === 'basic' ? '#10b981' : d === 'intermediate' ? '#f59e0b' : '#ef4444',
-                                                        display: 'inline-block', flexShrink: 0
-                                                    }} />
-                                                    <div style={{ flex: 1 }}>
-                                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                                            <span>{d === 'basic' ? 'Basic' : d === 'intermediate' ? 'Intermediate' : 'Advanced'}</span>
-                                                            {difficulty === d && <Check size={16} />}
-                                                        </div>
-                                                        <p style={{ margin: '0.15rem 0 0', fontSize: '0.75rem', fontWeight: 400, opacity: 0.8, color: 'var(--text-muted)' }}>
-                                                            {d === 'basic' ? 'Easy recall questions' : d === 'intermediate' ? 'Balanced conceptual mix' : 'Analytical challenges'}
-                                                        </p>
-                                                    </div>
-                                                </div>
-                                            </button>
-                                        ))}
-                                    </div>
-                                    <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: '0.4rem 0 0' }}>
-                                        {difficulty === 'basic' ? 'Simple recall and comprehension questions.' :
-                                            difficulty === 'intermediate' ? 'A balanced mix of recall and conceptual questions.' :
-                                                'Analytical, hypothetical & challenging questions.'}
-                                    </p>
-                                </div>
-
-                                <div style={{ marginBottom: '1.25rem' }}>
-                                    <label style={{ display: 'block', fontWeight: 500, fontSize: '0.875rem', marginBottom: '0.4rem' }}>Number of Questions</label>
-                                    <select value={questionCount} onChange={e => setQuestionCount(Number(e.target.value))}
-                                        style={{ width: '100%', padding: '0.65rem 0.85rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)', background: 'var(--surface)', fontSize: '0.95rem' }}>
-                                        <option value={5}>5 Questions ({difficulty === 'basic' ? 'Quick Check' : difficulty === 'intermediate' ? 'Standard Check' : 'Deep Dive'})</option>
-                                        <option value={10}>10 Questions (Standard Test)</option>
-                                        <option value={15}>15 Questions (Comprehensive)</option>
-                                    </select>
-                                </div>
-
-                                <div style={{ marginBottom: '1.25rem' }}>
-                                    <label style={{ display: 'block', fontWeight: 500, fontSize: '0.875rem', marginBottom: '0.4rem' }}>Special Instructions (Optional)</label>
-                                    <textarea
-                                        value={customInstructions}
-                                        onChange={e => setCustomInstructions(e.target.value)}
-                                        placeholder="e.g. Focus on vocabulary, or include 2 word problems..."
-                                        style={{
-                                            width: '100%', padding: '0.75rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)',
-                                            background: 'var(--surface)', fontSize: '0.9rem', minHeight: '80px', resize: 'vertical'
-                                        }}
-                                    />
-                                    <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: '0.4rem 0 0' }}>
-                                        Guide the AI on what to prioritize in the test.
-                                    </p>
-                                </div>
-
-                                <div style={{ marginBottom: '1rem' }}>
-                                    <label style={{ display: 'block', fontWeight: 500, fontSize: '0.875rem', marginBottom: '0.4rem' }}>Homework Images</label>
-                                    <label style={{
-                                        display: 'block', border: `2px dashed ${selectedFiles.length > 0 ? 'var(--primary)' : 'var(--border)'}`,
-                                        borderRadius: 'var(--radius-md)', padding: '1.25rem 1rem', textAlign: 'center', cursor: 'pointer',
-                                        background: selectedFiles.length > 0 ? 'rgba(79,70,229,0.04)' : 'transparent', transition: 'var(--transition)'
-                                    }}>
-                                        <input ref={fileInputRef} type="file" style={{ display: 'none' }} onChange={handleFileChange} accept="image/*,.pdf" multiple />
-                                        <div style={{ color: 'var(--text-muted)' }}>
-                                            <Image size={24} style={{ margin: '0 auto 0.5rem' }} />
-                                            <p style={{ margin: 0, fontSize: '0.85rem', fontWeight: 500 }}>Click to add files</p>
-                                            <p style={{ margin: '0.2rem 0 0', fontSize: '0.75rem' }}>PNG, JPG or PDF • multiple allowed</p>
-                                        </div>
-                                    </label>
-                                </div>
-
-                                {selectedFiles.length > 0 && (
-                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem', marginBottom: '1.25rem' }}>
-                                        {selectedFiles.map((file: File, idx: number) => (
-                                            <div key={idx} style={{ padding: '0.75rem', background: 'var(--surface-hover)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)' }}>
-                                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: clarityResults[idx] ? '0.5rem' : 0 }}>
-                                                    {filePreviews[idx]
-                                                        ? <img src={filePreviews[idx]} alt={file.name} style={{ width: '36px', height: '36px', objectFit: 'cover', borderRadius: '6px', flexShrink: 0 }} />
-                                                        : <div style={{ width: '36px', height: '36px', background: 'var(--border)', borderRadius: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><FileText size={16} /></div>
-                                                    }
-                                                    <div style={{ flex: 1, minWidth: 0 }}>
-                                                        <p style={{ margin: 0, fontWeight: 600, fontSize: '0.82rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</p>
-                                                        <p style={{ margin: 0, fontSize: '0.7rem', color: 'var(--text-muted)' }}>{(file.size / 1024 / 1024).toFixed(2)} MB</p>
-                                                    </div>
-                                                    <button onClick={() => removeFile(idx)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: '0.25rem', flexShrink: 0 }} className="hover-red">
-                                                        <Trash2 size={14} />
-                                                    </button>
-                                                </div>
-
-                                                {clarityResults[idx] && (
-                                                    <div style={{
-                                                        display: 'flex', alignItems: 'center', gap: '0.4rem',
-                                                        padding: '0.35rem 0.6rem', background: clarityResults[idx].isClear ? 'rgba(16,185,129,0.08)' : 'rgba(245,158,11,0.08)',
-                                                        borderRadius: '4px', border: `1px solid ${clarityResults[idx].isClear ? 'rgba(16,185,129,0.2)' : 'rgba(245,158,11,0.2)'}`
-                                                    }}>
-                                                        {clarityResults[idx].isClear ? (
-                                                            <Check size={12} color="var(--secondary)" />
-                                                        ) : (
-                                                            <Info size={12} color="#d97706" />
-                                                        )}
-                                                        <span style={{
-                                                            fontSize: '0.72rem', fontWeight: 600,
-                                                            color: clarityResults[idx].isClear ? 'var(--secondary)' : '#b45309'
-                                                        }}>
-                                                            {clarityResults[idx].isClear ? 'Clear Image' : clarityResults[idx].reason || 'Unclear'}
-                                                        </span>
-                                                    </div>
-                                                )}
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
-
-                                {generateError && (
-                                    <div style={{ padding: '0.85rem', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 'var(--radius-md)', marginBottom: '1rem', color: '#dc2626', fontSize: '0.85rem' }}>
-                                        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start' }}>
-                                            <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: '2px' }} />
-                                            <span>{generateError}</span>
-                                        </div>
-                                        {(generateError.toLowerCase().includes('limit') || generateError.toLowerCase().includes('upgrade') || generateError.toLowerCase().includes('pro')) && (
-                                            <button
-                                                onClick={() => {
-                                                    setUpgradeReason('daily_limit');
-                                                    setIsUpgradeModalOpen(true);
-                                                }}
-                                                className="btn btn-primary"
-                                                style={{ width: '100%', marginTop: '0.65rem', fontSize: '0.82rem', padding: '0.5rem', justifyContent: 'center', background: 'linear-gradient(135deg, var(--primary), #818cf8)' }}
-                                            >
-                                                <Sparkles size={14} /> Upgrade to Pro for Unlimited Tests
-                                            </button>
-                                        )}
-                                    </div>
-                                )}
-
-                                {!pendingTestId ? (
-                                    <button className="btn btn-primary" onClick={handleUploadAndPrepare}
-                                        disabled={(selectedFiles.length === 0 && !customInstructions.trim()) || isUploading}
-                                        style={{ width: '100%', justifyContent: 'center', opacity: (selectedFiles.length === 0 && !customInstructions.trim()) ? 0.5 : 1 }}>
-                                        {isUploading
-                                            ? <><span style={{ width: '16px', height: '16px', border: '2px solid rgba(255,255,255,0.4)', borderTopColor: 'white', borderRadius: '50%', animation: 'spin 0.8s linear infinite', display: 'inline-block' }} /> Preparing…</>
-                                            : <><Upload size={16} /> Prepare Test</>}
-                                    </button>
-                                ) : (
-                                    <button className="btn btn-primary" onClick={handleGenerate}
-                                        disabled={isGenerating}
-                                        style={{ width: '100%', justifyContent: 'center', background: 'linear-gradient(135deg, var(--primary), #818cf8)' }}>
-                                        {isGenerating
-                                            ? <><span style={{ width: '16px', height: '16px', border: '2px solid rgba(255,255,255,0.4)', borderTopColor: 'white', borderRadius: '50%', animation: 'spin 0.8s linear infinite', display: 'inline-block' }} /> AI is generating…</>
-                                            : <><Sparkles size={16} /> Generate {difficulty === 'advanced' ? 'Advanced' : difficulty === 'intermediate' ? 'Mid' : 'Basic'} Test</>}
-                                    </button>
-                                )}
-                            </>
-                        )}
-                    </div>
-                </div>
-            </div>
             <style>{`@keyframes spin { 100% { transform: rotate(360deg); } }`}</style>
         </div>
+
+        {/* AI VERIFICATION REPORT MODAL */}
+        {viewingHomework && (
+            <div
+                role="dialog"
+                aria-modal="true"
+                style={{
+                    position: 'fixed',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    background: 'rgba(0,0,0,0.65)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    padding: '1rem',
+                    zIndex: 9999,
+                    backdropFilter: 'blur(4px)'
+                }}
+            >
+                <div
+                    className="card animate-fade-in"
+                    style={{
+                        width: '100%',
+                        maxWidth: '650px',
+                        maxHeight: '90vh',
+                        overflowY: 'auto',
+                        padding: '1.5rem',
+                        position: 'relative'
+                    }}
+                >
+                    {/* Header */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1.25rem' }}>
+                        <div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
+                                <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
+                                    {viewingHomework.subject} • {viewingHomework.childName}
+                                </span>
+                            </div>
+                            <h2 style={{ fontSize: '1.25rem', margin: 0, fontWeight: 700 }}>
+                                {viewingHomework.title}
+                            </h2>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() => setViewingHomework(null)}
+                            style={{
+                                background: 'var(--surface-hover)',
+                                border: 'none',
+                                borderRadius: '50%',
+                                width: '32px',
+                                height: '32px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                cursor: 'pointer',
+                                color: 'var(--text-muted)'
+                            }}
+                        >
+                            <X size={18} />
+                        </button>
+                    </div>
+
+                    {/* Completeness Banner */}
+                    {viewingHomework.verificationResult && (
+                        <div style={{
+                            padding: '1rem',
+                            borderRadius: 'var(--radius-md)',
+                            background: viewingHomework.verificationResult.completenessScore >= 80 ? 'rgba(16, 185, 129, 0.1)' : 'rgba(245, 158, 11, 0.1)',
+                            border: `1.5px solid ${viewingHomework.verificationResult.completenessScore >= 80 ? 'rgba(16, 185, 129, 0.3)' : 'rgba(245, 158, 11, 0.3)'}`,
+                            marginBottom: '1.25rem',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            flexWrap: 'wrap',
+                            gap: '0.75rem'
+                        }}>
+                            <div>
+                                <span style={{
+                                    fontSize: '0.75rem',
+                                    fontWeight: 700,
+                                    textTransform: 'uppercase',
+                                    color: viewingHomework.verificationResult.completenessScore >= 80 ? '#047857' : '#b45309'
+                                }}>
+                                    {viewingHomework.verificationResult.status === 'verified_complete' ? '🎉 VERIFIED COMPLETE' : '⚠️ REVISION NEEDED'}
+                                </span>
+                                <h3 style={{ margin: '0.15rem 0 0', fontSize: '1.35rem', fontWeight: 800, color: viewingHomework.verificationResult.completenessScore >= 80 ? '#047857' : '#b45309' }}>
+                                    {viewingHomework.verificationResult.completenessScore}% Completeness
+                                </h3>
+                            </div>
+                            <div style={{
+                                padding: '0.4rem 0.85rem',
+                                borderRadius: '2rem',
+                                background: viewingHomework.verificationResult.completenessScore >= 80 ? '#10b981' : '#f59e0b',
+                                color: 'white',
+                                fontWeight: 700,
+                                fontSize: '0.85rem'
+                            }}>
+                                {viewingHomework.verificationResult.status === 'verified_complete' ? 'Marked Complete ✓' : 'Partial Work'}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* AI Feedback & Coaching */}
+                    {viewingHomework.verificationResult?.coachingFeedback && (
+                        <div style={{ marginBottom: '1.25rem' }}>
+                            <h4 style={{ fontSize: '0.9rem', margin: '0 0 0.4rem', display: 'flex', alignItems: 'center', gap: '0.4rem', color: 'var(--primary)' }}>
+                                <Sparkles size={16} /> AI Teacher Evaluation & Coaching
+                            </h4>
+                            <div style={{
+                                padding: '0.85rem 1rem',
+                                background: 'var(--surface-hover)',
+                                borderRadius: 'var(--radius-md)',
+                                fontSize: '0.88rem',
+                                lineHeight: '1.5',
+                                border: '1px solid var(--border)'
+                            }}>
+                                {viewingHomework.verificationResult.coachingFeedback}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Questions Completed vs Missing Breakdown */}
+                    {viewingHomework.verificationResult && (
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem', marginBottom: '1.25rem' }}>
+                            {/* Completed */}
+                            <div style={{ padding: '0.85rem', background: 'rgba(16, 185, 129, 0.05)', borderRadius: 'var(--radius-md)', border: '1px solid rgba(16, 185, 129, 0.2)' }}>
+                                <h5 style={{ margin: '0 0 0.5rem', fontSize: '0.82rem', fontWeight: 700, color: '#047857', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                                    <CheckCircle2 size={15} /> Completed in Notebook
+                                </h5>
+                                <ul style={{ margin: 0, paddingLeft: '1.2rem', fontSize: '0.8rem', color: 'var(--text-main)', lineHeight: '1.5' }}>
+                                    {viewingHomework.verificationResult.completedQuestions.map((q, i) => (
+                                        <li key={i}>{q}</li>
+                                    ))}
+                                </ul>
+                            </div>
+
+                            {/* Missing */}
+                            <div style={{ padding: '0.85rem', background: 'rgba(239, 68, 68, 0.05)', borderRadius: 'var(--radius-md)', border: '1px solid rgba(239, 68, 68, 0.2)' }}>
+                                <h5 style={{ margin: '0 0 0.5rem', fontSize: '0.82rem', fontWeight: 700, color: '#dc2626', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                                    <AlertTriangle size={15} /> Missing / Incomplete
+                                </h5>
+                                {viewingHomework.verificationResult.missingQuestions.length > 0 ? (
+                                    <ul style={{ margin: 0, paddingLeft: '1.2rem', fontSize: '0.8rem', color: 'var(--text-main)', lineHeight: '1.5' }}>
+                                        {viewingHomework.verificationResult.missingQuestions.map((q, i) => (
+                                            <li key={i}>{q}</li>
+                                        ))}
+                                    </ul>
+                                ) : (
+                                    <p style={{ margin: 0, fontSize: '0.8rem', color: '#047857', fontWeight: 500 }}>All questions completed!</p>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Side-by-Side Photo Comparison */}
+                    <div style={{ marginBottom: '1.25rem' }}>
+                        <h4 style={{ fontSize: '0.9rem', margin: '0 0 0.5rem', fontWeight: 600 }}>Visual Verification Photos</h4>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem' }}>
+                            {/* Teacher's homework */}
+                            <div style={{ textAlign: 'center' }}>
+                                <p style={{ margin: '0 0 0.35rem', fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)' }}>Teacher's Assignment</p>
+                                {viewingHomework.originalFiles && viewingHomework.originalFiles[0] ? (
+                                    <img
+                                        src={viewingHomework.originalFiles[0]}
+                                        alt="Assignment"
+                                        onClick={() => setViewingFullImage(viewingHomework.originalFiles![0])}
+                                        style={{ width: '100%', height: '140px', objectFit: 'cover', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', cursor: 'pointer' }}
+                                    />
+                                ) : (
+                                    <div style={{ height: '140px', background: 'var(--surface-hover)', borderRadius: 'var(--radius-sm)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>No image</div>
+                                )}
+                            </div>
+
+                            {/* Student's notebook */}
+                            <div style={{ textAlign: 'center' }}>
+                                <p style={{ margin: '0 0 0.35rem', fontSize: '0.75rem', fontWeight: 600, color: '#10b981' }}>Student's Solved Notebook</p>
+                                {viewingHomework.studentSubmissionFiles && viewingHomework.studentSubmissionFiles[0] ? (
+                                    <img
+                                        src={viewingHomework.studentSubmissionFiles[0]}
+                                        alt="Student submission"
+                                        onClick={() => setViewingFullImage(viewingHomework.studentSubmissionFiles![0])}
+                                        style={{ width: '100%', height: '140px', objectFit: 'cover', borderRadius: 'var(--radius-sm)', border: '2px solid #10b981', cursor: 'pointer' }}
+                                    />
+                                ) : (
+                                    <div style={{ height: '140px', background: 'var(--surface-hover)', borderRadius: 'var(--radius-sm)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>No student submission</div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+
+                    <button
+                        type="button"
+                        onClick={() => setViewingHomework(null)}
+                        className="btn btn-primary"
+                        style={{ width: '100%', justifyContent: 'center' }}
+                    >
+                        Close Report
+                    </button>
+                </div>
+            </div>
+        )}
+
+        {/* FULL IMAGE LIGHTBOX MODAL */}
+        {viewingFullImage && (
+            <div
+                role="dialog"
+                aria-modal="true"
+                onClick={() => setViewingFullImage(null)}
+                style={{
+                    position: 'fixed',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    background: 'rgba(0,0,0,0.85)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    padding: '1.5rem',
+                    zIndex: 10000,
+                    cursor: 'zoom-out'
+                }}
+            >
+                <img
+                    src={viewingFullImage}
+                    alt="Full preview"
+                    style={{
+                        maxWidth: '95vw',
+                        maxHeight: '92vh',
+                        objectFit: 'contain',
+                        borderRadius: 'var(--radius-md)',
+                        boxShadow: '0 8px 32px rgba(0,0,0,0.5)'
+                    }}
+                />
+            </div>
+        )}
 
         {/* Upgrade Modal */}
         <UpgradeModal

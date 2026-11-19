@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { supabase } from '../lib/supabase';
 import type { DatabaseTest, DatabaseQuestion, RoughWorkEvaluation } from '../lib/supabase';
 import useAuthStore from './authStore';
-import { generateQuestionsFromImages, fileToBase64, evaluateHandwrittenWork } from '../lib/gemini';
+import { generateQuestionsFromImages, fileToBase64, evaluateHandwrittenWork, verifyDailyHomework, type HomeworkVerificationResult } from '../lib/gemini';
 import type { Difficulty } from '../lib/gemini';
 import { uploadHomeworkFiles, uploadRoughWorkFile } from '../lib/storage';
 
@@ -35,6 +35,32 @@ export interface Test {
     roughWorkEvaluation?: RoughWorkEvaluation;
 }
 
+export interface DailyHomework {
+    id: string;
+    parentId: string;
+    childId?: string;
+    childName?: string;
+    title: string;
+    subject: string;
+    description?: string;
+    source: 'whatsapp' | 'teams' | 'diary' | 'manual';
+    dueDate?: string;
+    createdAt: string;
+    assignmentImageUrls: string[]; // parent uploaded photos of school homework from WhatsApp / Teams
+    originalFiles?: string[]; // convenience alias
+
+    // Student submission
+    submissionStatus: 'pending' | 'submitted' | 'verified_complete' | 'needs_revision';
+    status?: 'pending' | 'submitted' | 'verified' | 'verified_complete' | 'needs_revision'; // convenience alias
+    studentSubmissionUrls?: string[]; // photos of student's completed written work
+    studentSubmissionFiles?: string[]; // convenience alias
+    submittedAt?: string;
+    
+    // AI Verification Result
+    verification?: HomeworkVerificationResult;
+    verificationResult?: HomeworkVerificationResult; // convenience alias
+}
+
 export interface StudentProgressItem {
     id: string;
     studentId?: string;
@@ -56,11 +82,25 @@ export interface LinkedChild {
 
 interface AppState {
     tests: Test[];
+    dailyHomeworkList: DailyHomework[];
     progress: StudentProgressItem[];
     childrenList: LinkedChild[];
     isLoading: boolean;
     isGenerating: boolean;
     fetchTests: () => Promise<void>;
+    fetchDailyHomework: () => Promise<void>;
+    addDailyHomework: (data: {
+        childId?: string;
+        childName?: string;
+        title: string;
+        subject: string;
+        description?: string;
+        source: 'whatsapp' | 'teams' | 'diary' | 'manual';
+        dueDate?: string;
+        files: File[];
+    }) => Promise<DailyHomework>;
+    submitAndVerifyDailyHomework: (homeworkId: string, files: File[], notes?: string) => Promise<DailyHomework | null>;
+    deleteDailyHomework: (homeworkId: string) => Promise<void>;
     fetchProgress: (targetId?: string) => Promise<void>;
     fetchChildren: () => Promise<void>;
     uploadHomework: (files: File[], subject: string, dueDate: string | null) => Promise<string | null>;
@@ -240,12 +280,222 @@ export const DEMO_SAMPLE_PROGRESS: StudentProgressItem[] = [
     }
 ];
 
+export const DEMO_SAMPLE_DAILY_HOMEWORK: DailyHomework[] = [
+    {
+        id: 'dh-demo-1',
+        parentId: 'superuser-parent-001',
+        childId: 'superuser-student-001',
+        childName: 'Alex',
+        title: 'Math Ex 4.2 Fractions (Q1 to Q8)',
+        subject: 'Math',
+        description: 'Teacher shared worksheet photo on Class WhatsApp Group. Solve questions in math notebook with full working.',
+        source: 'whatsapp',
+        dueDate: 'Today',
+        createdAt: new Date().toISOString(),
+        assignmentImageUrls: [
+            'https://images.unsplash.com/photo-1635070041078-e363dbe005cb?w=800&auto=format&fit=crop&q=80'
+        ],
+        originalFiles: [
+            'https://images.unsplash.com/photo-1635070041078-e363dbe005cb?w=800&auto=format&fit=crop&q=80'
+        ],
+        submissionStatus: 'pending',
+        status: 'pending'
+    },
+    {
+        id: 'dh-demo-2',
+        parentId: 'superuser-parent-001',
+        childId: 'superuser-student-001',
+        childName: 'Alex',
+        title: 'Science Ch 3 Separation of Substances Q&A',
+        subject: 'Science',
+        description: 'Uploaded from MS Teams class assignment tab. Answer textbook questions 1-5.',
+        source: 'teams',
+        dueDate: 'Yesterday',
+        createdAt: new Date(Date.now() - 86400000).toISOString(),
+        assignmentImageUrls: [
+            'https://images.unsplash.com/photo-1532094349884-543bc11b234d?w=800&auto=format&fit=crop&q=80'
+        ],
+        originalFiles: [
+            'https://images.unsplash.com/photo-1532094349884-543bc11b234d?w=800&auto=format&fit=crop&q=80'
+        ],
+        submissionStatus: 'verified_complete',
+        status: 'verified',
+        studentSubmissionUrls: [
+            'https://images.unsplash.com/photo-1596495577886-d920f1fb7238?w=800&auto=format&fit=crop&q=80'
+        ],
+        studentSubmissionFiles: [
+            'https://images.unsplash.com/photo-1596495577886-d920f1fb7238?w=800&auto=format&fit=crop&q=80'
+        ],
+        submittedAt: new Date(Date.now() - 3600000).toISOString(),
+        verification: {
+            isComplete: true,
+            completenessScore: 95,
+            summary: 'All 5 textbook questions identified from MS Teams assignment were solved in student notebook.',
+            feedback: 'Neat presentation with proper diagrams of filtration and decantation. Handwriting is clear and answers are thorough.',
+            coachingFeedback: 'Neat presentation with proper diagrams of filtration and decantation. Handwriting is clear and answers are thorough.',
+            completedQuestions: ['Q1: Handpicking definition', 'Q2: Threshing & Winnowing', 'Q3: Sieving application', 'Q4: Sedimentation vs Decantation', 'Q5: Evaporation experiment'],
+            missingOrIncompleteQuestions: [],
+            missingQuestions: [],
+            status: 'verified_complete',
+            accuracyNotes: 'All key definitions and scientific terms were used correctly.',
+            evaluatedAt: new Date(Date.now() - 3500000).toISOString(),
+        },
+        verificationResult: {
+            isComplete: true,
+            completenessScore: 95,
+            summary: 'All 5 textbook questions identified from MS Teams assignment were solved in student notebook.',
+            feedback: 'Neat presentation with proper diagrams of filtration and decantation. Handwriting is clear and answers are thorough.',
+            coachingFeedback: 'Neat presentation with proper diagrams of filtration and decantation. Handwriting is clear and answers are thorough.',
+            completedQuestions: ['Q1: Handpicking definition', 'Q2: Threshing & Winnowing', 'Q3: Sieving application', 'Q4: Sedimentation vs Decantation', 'Q5: Evaporation experiment'],
+            missingOrIncompleteQuestions: [],
+            missingQuestions: [],
+            status: 'verified_complete',
+            accuracyNotes: 'All key definitions and scientific terms were used correctly.',
+            evaluatedAt: new Date(Date.now() - 3500000).toISOString(),
+        }
+    }
+];
+
 const useAppStore = create<AppState>((set, get) => ({
     tests: [],
+    dailyHomeworkList: [],
     progress: [],
     childrenList: [],
     isLoading: false,
     isGenerating: false,
+
+    fetchDailyHomework: async () => {
+        try {
+            const raw = localStorage.getItem('hometutor_daily_homework');
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                if (Array.isArray(parsed) && parsed.length > 0) {
+                    set({ dailyHomeworkList: parsed });
+                    return;
+                }
+            }
+            // Seed with sample data for demonstration / superuser testing
+            localStorage.setItem('hometutor_daily_homework', JSON.stringify(DEMO_SAMPLE_DAILY_HOMEWORK));
+            set({ dailyHomeworkList: DEMO_SAMPLE_DAILY_HOMEWORK });
+        } catch (e) {
+            console.warn('Error loading daily homework:', e);
+            set({ dailyHomeworkList: DEMO_SAMPLE_DAILY_HOMEWORK });
+        }
+    },
+
+    addDailyHomework: async (data) => {
+        const user = useAuthStore.getState().user;
+        const parentId = user?.id || 'parent-user';
+
+        // Convert files to data URLs for persistent client storage & previews
+        const imageUrls = await Promise.all(
+            data.files.map(async (file) => {
+                try {
+                    const b64 = await fileToBase64(file);
+                    return `data:${file.type || 'image/jpeg'};base64,${b64}`;
+                } catch {
+                    return URL.createObjectURL(file);
+                }
+            })
+        );
+
+        const newHomework: DailyHomework = {
+            id: `dh-${Date.now()}`,
+            parentId,
+            childId: data.childId,
+            childName: data.childName || 'Child',
+            title: data.title,
+            subject: data.subject,
+            description: data.description,
+            source: data.source,
+            dueDate: data.dueDate,
+            createdAt: new Date().toISOString(),
+            assignmentImageUrls: imageUrls,
+            originalFiles: imageUrls,
+            submissionStatus: 'pending',
+            status: 'pending'
+        };
+
+        const updated = [newHomework, ...get().dailyHomeworkList];
+        set({ dailyHomeworkList: updated });
+        try {
+            localStorage.setItem('hometutor_daily_homework', JSON.stringify(updated));
+        } catch (e) {
+            console.warn('LocalStorage save warning:', e);
+        }
+
+        return newHomework;
+    },
+
+    submitAndVerifyDailyHomework: async (homeworkId: string, files: File[], notes?: string) => {
+        const item = get().dailyHomeworkList.find(h => h.id === homeworkId);
+        if (!item) return null;
+
+        // Convert student files to data URLs
+        const studentUrls = await Promise.all(
+            files.map(async (file) => {
+                try {
+                    const b64 = await fileToBase64(file);
+                    return `data:${file.type || 'image/jpeg'};base64,${b64}`;
+                } catch {
+                    return URL.createObjectURL(file);
+                }
+            })
+        );
+
+        // Convert assignment image URLs back to File objects for Gemini vision
+        const assignmentFiles = await Promise.all(
+            item.assignmentImageUrls.map(async (url, idx) => {
+                if (url.startsWith('data:')) {
+                    const res = await fetch(url);
+                    const blob = await res.blob();
+                    return new File([blob], `assignment-${idx}.jpg`, { type: blob.type || 'image/jpeg' });
+                } else {
+                    return new File([''], `assignment-${idx}.jpg`, { type: 'image/jpeg' });
+                }
+            })
+        );
+
+        const verification = await verifyDailyHomework(
+            assignmentFiles,
+            files,
+            item.subject,
+            item.title,
+            notes ? `${item.description || ''} (Student Notes: ${notes})` : item.description
+        );
+
+        const isDone = verification.isComplete;
+        const updatedItem: DailyHomework = {
+            ...item,
+            submissionStatus: isDone ? 'verified_complete' : 'needs_revision',
+            status: isDone ? 'verified' : 'needs_revision',
+            studentSubmissionUrls: studentUrls,
+            studentSubmissionFiles: studentUrls,
+            submittedAt: new Date().toISOString(),
+            verification,
+            verificationResult: verification
+        };
+
+        const updatedList = get().dailyHomeworkList.map(h => h.id === homeworkId ? updatedItem : h);
+        set({ dailyHomeworkList: updatedList });
+        try {
+            localStorage.setItem('hometutor_daily_homework', JSON.stringify(updatedList));
+        } catch (e) {
+            console.warn('LocalStorage save warning:', e);
+        }
+
+        return updatedItem;
+    },
+
+    deleteDailyHomework: async (homeworkId: string) => {
+        const updated = get().dailyHomeworkList.filter(h => h.id !== homeworkId);
+        set({ dailyHomeworkList: updated });
+        try {
+            localStorage.setItem('hometutor_daily_homework', JSON.stringify(updated));
+        } catch (e) {
+            console.warn('LocalStorage save warning:', e);
+        }
+    },
 
     fetchTests: async () => {
         const user = useAuthStore.getState().user;
