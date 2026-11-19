@@ -148,22 +148,22 @@ const Login = () => {
     };
 
     return (
-        <div className="container flex justify-center items-center" style={{ minHeight: 'calc(100vh - 150px)' }}>
-            <div className="card animate-fade-in" style={{ width: '100%', maxWidth: '420px', padding: '2.5rem' }}>
-                <h2 style={{ textAlign: 'center', marginBottom: '0.5rem', fontSize: '1.75rem' }}>
+        <div className="container flex justify-center items-center" style={{ minHeight: 'calc(100dvh - 140px)', padding: '1rem 0.5rem' }}>
+            <div className="card animate-fade-in" style={{ width: '100%', maxWidth: '420px', padding: 'clamp(1.25rem, 4vw, 2.25rem)' }}>
+                <h2 style={{ textAlign: 'center', marginBottom: '0.4rem', fontSize: 'clamp(1.4rem, 4vw, 1.75rem)' }}>
                     {isLogin ? 'Welcome Back' : 'Create Account'}
                 </h2>
-                <p style={{ textAlign: 'center', color: 'var(--text-muted)', marginBottom: '2rem' }}>
+                <p style={{ textAlign: 'center', color: 'var(--text-muted)', marginBottom: '1.5rem', fontSize: '0.9rem' }}>
                     {isLogin ? 'Please sign in to continue.' : 'Sign up to get started as a tutor.'}
                 </p>
 
                 {/* Role Toggle */}
-                <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '2rem', background: 'var(--surface-hover)', padding: '0.25rem', borderRadius: 'var(--radius-md)' }}>
+                <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.5rem', background: 'var(--surface-hover)', padding: '0.25rem', borderRadius: 'var(--radius-md)' }}>
                     <button
                         type="button"
                         onClick={() => setRole('parent')}
                         style={{
-                            flex: 1, padding: '0.5rem', border: 'none', borderRadius: 'var(--radius-sm)', cursor: 'pointer',
+                            flex: 1, padding: '0.65rem 0.5rem', minHeight: '44px', border: 'none', borderRadius: 'var(--radius-sm)', cursor: 'pointer',
                             background: role === 'parent' ? 'white' : 'transparent',
                             boxShadow: role === 'parent' ? 'var(--shadow-sm)' : 'none',
                             fontWeight: role === 'parent' ? 600 : 400,
@@ -177,7 +177,7 @@ const Login = () => {
                         type="button"
                         onClick={() => setRole('student')}
                         style={{
-                            flex: 1, padding: '0.5rem', border: 'none', borderRadius: 'var(--radius-sm)', cursor: 'pointer',
+                            flex: 1, padding: '0.65rem 0.5rem', minHeight: '44px', border: 'none', borderRadius: 'var(--radius-sm)', cursor: 'pointer',
                             background: role === 'student' ? 'white' : 'transparent',
                             boxShadow: role === 'student' ? 'var(--shadow-sm)' : 'none',
                             fontWeight: role === 'student' ? 600 : 400,

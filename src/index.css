@@ -27,6 +27,11 @@
   padding: 0;
 }
 
+html {
+  scroll-padding-top: calc(4.5rem + env(safe-area-inset-top, 0px));
+  scroll-padding-bottom: calc(5rem + env(safe-area-inset-bottom, 0px));
+}
+
 body {
   font-family: 'Inter', sans-serif;
   background-color: var(--background);
@@ -34,6 +39,9 @@ body {
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  -webkit-tap-highlight-color: transparent;
+  overflow-x: hidden;
+  min-height: 100dvh;
 }
 
 h1, h2, h3, h4, h5, h6 {
@@ -41,6 +49,11 @@ h1, h2, h3, h4, h5, h6 {
   font-weight: 700;
   color: var(--text-main);
   letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+
+p, li {
+  text-wrap: pretty;
 }
 
 a {
@@ -168,6 +181,167 @@ a:hover {
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+/* ==========================================================================
+   Mobile-First App Utilities & Layout System
+   ========================================================================== */
+
+/* Touch Target Minimum (WCAG 2.5.5 / 2.5.8) */
+:where(button, .btn, input, select, textarea, [role="button"]) {
+  touch-action: manipulation;
+}
+
+/* Visibility Helpers */
+.mobile-only {
+  display: none !important;
+}
+
+.desktop-only {
+  display: flex !important;
+}
+
+/* Responsive Dashboard & Grid Layouts */
+.parent-dashboard-grid {
+  display: grid;
+  grid-template-columns: 1fr 380px;
+  gap: 2rem;
+  align-items: start;
+}
+
+.stats-grid-responsive {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1.25rem;
+  margin-bottom: 2.5rem;
+}
+
+.two-col-mobile-stack {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+/* Mobile Scrollable Horizontal Strip */
+.mobile-scroll-x {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+}
+
+/* Mobile Bottom Navigation Bar (Native App Style) */
+.mobile-tab-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: calc(3.85rem + env(safe-area-inset-bottom, 0px));
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-top: 1px solid var(--border);
+  display: none;
+  justify-content: space-around;
+  align-items: center;
+  z-index: 100;
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.04);
+}
+
+.mobile-tab-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  height: 100%;
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 0.72rem;
+  font-weight: 500;
+  gap: 0.25rem;
+  min-height: 44px;
+  padding: 0.25rem;
+  transition: var(--transition);
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.mobile-tab-item.active {
+  color: var(--primary);
+  font-weight: 700;
+}
+
+.mobile-tab-item.active svg {
+  transform: scale(1.1);
+  color: var(--primary);
+}
+
+/* Mobile Responsive Breakpoints */
+@media (max-width: 768px) {
+  .mobile-only {
+    display: flex !important;
+  }
+
+  .desktop-only {
+    display: none !important;
+  }
+
+  .mobile-tab-bar {
+    display: flex;
+  }
+
+  .container {
+    padding-left: max(1rem, env(safe-area-inset-left, 0px));
+    padding-right: max(1rem, env(safe-area-inset-right, 0px));
+  }
+
+  /* Padding at bottom of main content to ensure clear separation from the bottom tab bar */
+  main {
+    padding-bottom: calc(5rem + env(safe-area-inset-bottom, 0px)) !important;
+    padding-top: 1rem !important;
+  }
+
+  .card {
+    padding: 1.15rem;
+    border-radius: var(--radius-md);
+  }
+
+  .parent-dashboard-grid {
+    grid-template-columns: 1fr;
+    gap: 1.5rem;
+  }
+
+  .stats-grid-responsive {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.75rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .stats-grid-responsive .card {
+    padding: 0.85rem;
+    gap: 0.65rem !important;
+  }
+
+  .stats-grid-responsive .card h3 {
+    font-size: 1.25rem !important;
+  }
+
+  .two-col-mobile-stack {
+    grid-template-columns: 1fr;
+  }
+
+  .btn {
+    min-height: 44px;
+    padding: 0.65rem 1.1rem;
+    font-size: 0.92rem;
+  }
+
+  .input {
+    min-height: 44px;
+    font-size: 16px; /* Prevents auto-zoom on iOS Safari when tapping inputs */
+  }
 }
 
 /* Print styles for downloading tests as PDF */

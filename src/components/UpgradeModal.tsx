@@ -67,7 +67,7 @@ const UpgradeModal: React.FC<UpgradeModalProps> = ({ isOpen, onClose, highlightR
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            padding: '1.5rem',
+            padding: 'max(0.5rem, env(safe-area-inset-top, 0px)) 0.5rem max(0.5rem, env(safe-area-inset-bottom, 0px))',
             overflowY: 'auto'
         }}>
             <div style={{
@@ -79,7 +79,7 @@ const UpgradeModal: React.FC<UpgradeModalProps> = ({ isOpen, onClose, highlightR
                 border: '1px solid var(--border, #e2e8f0)',
                 boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
                 position: 'relative',
-                maxHeight: '90vh',
+                maxHeight: '94dvh',
                 display: 'flex',
                 flexDirection: 'column',
                 overflow: 'hidden'
@@ -87,7 +87,7 @@ const UpgradeModal: React.FC<UpgradeModalProps> = ({ isOpen, onClose, highlightR
 
                 {/* Modal Header */}
                 <div style={{
-                    padding: '1.75rem 2rem 1.25rem',
+                    padding: '1.25rem 1.25rem 1rem',
                     borderBottom: '1px solid var(--border, #e2e8f0)',
                     display: 'flex',
                     alignItems: 'flex-start',
@@ -119,10 +119,10 @@ const UpgradeModal: React.FC<UpgradeModalProps> = ({ isOpen, onClose, highlightR
                                 </span>
                             )}
                         </div>
-                        <h2 style={{ fontSize: '1.65rem', margin: 0, fontWeight: 700 }}>
+                        <h2 style={{ fontSize: 'clamp(1.2rem, 3.5vw, 1.65rem)', margin: 0, fontWeight: 700 }}>
                             Supercharge Your Child's Learning
                         </h2>
-                        <p style={{ margin: '0.35rem 0 0', color: 'var(--text-muted, #64748b)', fontSize: '0.92rem' }}>
+                        <p style={{ margin: '0.35rem 0 0', color: 'var(--text-muted, #64748b)', fontSize: '0.85rem' }}>
                             Generate unlimited custom tests, unlock in-depth topic analytics, and support multiple children.
                         </p>
                     </div>
@@ -139,7 +139,8 @@ const UpgradeModal: React.FC<UpgradeModalProps> = ({ isOpen, onClose, highlightR
                             alignItems: 'center',
                             justifyContent: 'center',
                             cursor: 'pointer',
-                            color: 'var(--text-muted, #64748b)'
+                            color: 'var(--text-muted, #64748b)',
+                            flexShrink: 0
                         }}
                         aria-label="Close"
                     >
@@ -149,13 +150,13 @@ const UpgradeModal: React.FC<UpgradeModalProps> = ({ isOpen, onClose, highlightR
 
                 {/* Currency & Billing Toggles */}
                 <div style={{
-                    padding: '1rem 2rem',
+                    padding: '0.85rem 1.25rem',
                     background: 'var(--surface-hover, #f8fafc)',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'space-between',
                     flexWrap: 'wrap',
-                    gap: '1rem',
+                    gap: '0.75rem',
                     borderBottom: '1px solid var(--border, #e2e8f0)'
                 }}>
                     {/* Billing Cycle Switch */}
@@ -248,11 +249,11 @@ const UpgradeModal: React.FC<UpgradeModalProps> = ({ isOpen, onClose, highlightR
 
                 {/* Pricing Cards Grid */}
                 <div style={{
-                    padding: '2rem',
+                    padding: 'clamp(1rem, 3vw, 2rem)',
                     overflowY: 'auto',
                     display: 'grid',
-                    gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
-                    gap: '1.5rem',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+                    gap: '1.25rem',
                     alignItems: 'stretch'
                 }}>
 

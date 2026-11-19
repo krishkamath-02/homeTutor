@@ -855,7 +855,8 @@ export const CalendarPage = () => {
             {/* VIEW MODE 3: MONTH VIEW (Full Calendar Grid) */}
             {/* ------------------------------------------------------------- */}
             {viewMode === 'month' && (
-                <div className="card" style={{ padding: '1.25rem' }}>
+                <div className="card mobile-scroll-x" style={{ padding: '1.25rem' }}>
+                    <div style={{ minWidth: '600px' }}>
                     {/* Weekday Labels */}
                     <div style={{ 
                         display: 'grid', 
@@ -962,6 +963,7 @@ export const CalendarPage = () => {
                                 </div>
                             );
                         })}
+                    </div>
                     </div>
                 </div>
             )}

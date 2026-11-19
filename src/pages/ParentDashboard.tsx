@@ -275,10 +275,10 @@ const ParentDashboard = () => {
             />
         )}
         <div className="container animate-fade-in no-print">
-            <header style={{ marginBottom: '2.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
+            <header style={{ marginBottom: '1.75rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
                 <div>
-                    <h1 style={{ fontSize: '2.25rem', marginBottom: '0.25rem' }}>Parent Dashboard</h1>
-                    <p style={{ color: 'var(--text-muted)', fontSize: '1.125rem' }}>Welcome back, {user?.name || 'Parent'} 👋</p>
+                    <h1 style={{ fontSize: 'clamp(1.5rem, 4vw, 2.25rem)', marginBottom: '0.25rem' }}>Parent Dashboard</h1>
+                    <p style={{ color: 'var(--text-muted)', fontSize: 'clamp(0.9rem, 2.5vw, 1.125rem)' }}>Welcome back, {user?.name || 'Parent'} 👋</p>
                 </div>
                 <div style={{ display: 'flex', gap: '0.85rem', alignItems: 'center', flexWrap: 'wrap' }}>
                     {/* Subscription Plan Pill */}
@@ -327,12 +327,14 @@ const ParentDashboard = () => {
                         </button>
                     </div>
 
-                    <Link to="/profile" className="btn" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-main)' }}>
-                        {user?.avatarUrl ? <span style={{ fontSize: '1.2rem', lineHeight: 1 }}>{user.avatarUrl}</span> : <UserIcon size={18} />} Profile
-                    </Link>
-                    <button className="btn btn-secondary" onClick={logout} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                        Logout
-                    </button>
+                    <div className="desktop-only items-center gap-3">
+                        <Link to="/profile" className="btn" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-main)', padding: '0.45rem 0.85rem' }}>
+                            {user?.avatarUrl ? <span style={{ fontSize: '1.2rem', lineHeight: 1 }}>{user.avatarUrl}</span> : <UserIcon size={18} />} Profile
+                        </Link>
+                        <button className="btn btn-secondary" onClick={logout} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.45rem 0.85rem' }}>
+                            Logout
+                        </button>
+                    </div>
                 </div>
             </header>
 
@@ -409,26 +411,26 @@ const ParentDashboard = () => {
             </div>
 
             {/* Quick Stats */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1.25rem', marginBottom: '2.5rem' }}>
+            <div className="stats-grid-responsive">
                 <div className="card" style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                    <div style={{ background: 'rgba(79, 70, 229, 0.1)', padding: '1rem', borderRadius: 'var(--radius-md)', color: 'var(--primary)' }}><FileText size={24} /></div>
-                    <div><h3 style={{ fontSize: '1.5rem', margin: 0 }}>{tests.length}</h3><p style={{ color: 'var(--text-muted)', margin: 0, fontSize: '0.875rem' }}>Total Assignments</p></div>
+                    <div style={{ background: 'rgba(79, 70, 229, 0.1)', padding: '0.85rem', borderRadius: 'var(--radius-md)', color: 'var(--primary)', flexShrink: 0 }}><FileText size={22} /></div>
+                    <div><h3 style={{ fontSize: '1.4rem', margin: 0 }}>{tests.length}</h3><p style={{ color: 'var(--text-muted)', margin: 0, fontSize: '0.8rem' }}>Total Assignments</p></div>
                 </div>
                 <div className="card" style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                    <div style={{ background: 'rgba(16, 185, 129, 0.1)', padding: '1rem', borderRadius: 'var(--radius-md)', color: 'var(--secondary)' }}><CheckCircle size={24} /></div>
-                    <div><h3 style={{ fontSize: '1.5rem', margin: 0 }}>{averageScore}%</h3><p style={{ color: 'var(--text-muted)', margin: 0, fontSize: '0.875rem' }}>Average Test Score</p></div>
+                    <div style={{ background: 'rgba(16, 185, 129, 0.1)', padding: '0.85rem', borderRadius: 'var(--radius-md)', color: 'var(--secondary)', flexShrink: 0 }}><CheckCircle size={22} /></div>
+                    <div><h3 style={{ fontSize: '1.4rem', margin: 0 }}>{averageScore}%</h3><p style={{ color: 'var(--text-muted)', margin: 0, fontSize: '0.8rem' }}>Average Score</p></div>
                 </div>
                 <div className="card" style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                    <div style={{ background: 'rgba(245, 158, 11, 0.1)', padding: '1rem', borderRadius: 'var(--radius-md)', color: '#f59e0b' }}><Clock size={24} /></div>
-                    <div><h3 style={{ fontSize: '1.5rem', margin: 0 }}>{completedTests.length}</h3><p style={{ color: 'var(--text-muted)', margin: 0, fontSize: '0.875rem' }}>Tests Completed</p></div>
+                    <div style={{ background: 'rgba(245, 158, 11, 0.1)', padding: '0.85rem', borderRadius: 'var(--radius-md)', color: '#f59e0b', flexShrink: 0 }}><Clock size={22} /></div>
+                    <div><h3 style={{ fontSize: '1.4rem', margin: 0 }}>{completedTests.length}</h3><p style={{ color: 'var(--text-muted)', margin: 0, fontSize: '0.8rem' }}>Tests Completed</p></div>
                 </div>
                 <Link to="/calendar" className="card hover-lift" style={{ display: 'flex', alignItems: 'center', gap: '1rem', textDecoration: 'none', color: 'inherit' }}>
-                    <div style={{ background: 'rgba(79, 70, 229, 0.1)', padding: '1rem', borderRadius: 'var(--radius-md)', color: 'var(--primary)' }}><Calendar size={24} /></div>
-                    <div><h3 style={{ fontSize: '1.5rem', margin: 0 }}>Calendar</h3><p style={{ color: 'var(--text-muted)', margin: 0, fontSize: '0.875rem' }}>Exams & Study Blocks →</p></div>
+                    <div style={{ background: 'rgba(79, 70, 229, 0.1)', padding: '0.85rem', borderRadius: 'var(--radius-md)', color: 'var(--primary)', flexShrink: 0 }}><Calendar size={22} /></div>
+                    <div><h3 style={{ fontSize: '1.4rem', margin: 0 }}>Calendar</h3><p style={{ color: 'var(--text-muted)', margin: 0, fontSize: '0.8rem' }}>Exams & Blocks →</p></div>
                 </Link>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 380px', gap: '2rem' }}>
+            <div className="parent-dashboard-grid">
 
                 {/* Main Content */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
