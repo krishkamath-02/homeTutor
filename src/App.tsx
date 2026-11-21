@@ -1,7 +1,7 @@
 import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom';
 import { 
   BookOpen, Calendar as CalendarIcon, LayoutDashboard, 
-  User as UserIcon, LogOut, LogIn, Home 
+  User as UserIcon, LogOut, LogIn, Home, CheckSquare, Layers, BarChart3 
 } from 'lucide-react';
 import { useEffect } from 'react';
 import Landing from './pages/Landing';
@@ -188,44 +188,88 @@ function AppContent() {
         </Routes>
       </main>
 
-      {/* Native App-Style Bottom Tab Bar (Mobile Only) */}
+      {/* Native App-Style Bottom Tab Bar (Mobile Only - 5 PRD screens) */}
       <nav className="mobile-tab-bar" aria-label="Mobile Navigation">
         {user ? (
-          <>
-            <Link 
-              to={dashboardPath} 
-              className={`mobile-tab-item ${currentPath.includes('/dashboard') ? 'active' : ''}`}
-            >
-              <LayoutDashboard size={20} />
-              <span>Dashboard</span>
-            </Link>
+          user.role === 'parent' ? (
+            <>
+              <Link 
+                to="/parent/dashboard?tab=home" 
+                className={`mobile-tab-item ${currentPath.includes('/parent/dashboard') && (!location.search || location.search.includes('tab=home')) ? 'active' : ''}`}
+              >
+                <Home size={20} />
+                <span>Home</span>
+              </Link>
 
-            <Link 
-              to="/calendar" 
-              className={`mobile-tab-item ${currentPath === '/calendar' ? 'active' : ''}`}
-            >
-              <CalendarIcon size={20} />
-              <span>Calendar</span>
-            </Link>
+              <Link 
+                to="/parent/dashboard?tab=today" 
+                className={`mobile-tab-item ${location.search.includes('tab=today') ? 'active' : ''}`}
+              >
+                <CheckSquare size={20} />
+                <span>Today</span>
+              </Link>
 
-            <Link 
-              to="/profile" 
-              className={`mobile-tab-item ${currentPath === '/profile' ? 'active' : ''}`}
-            >
-              <UserIcon size={20} />
-              <span>Profile</span>
-            </Link>
+              <Link 
+                to="/calendar" 
+                className={`mobile-tab-item ${currentPath === '/calendar' ? 'active' : ''}`}
+              >
+                <CalendarIcon size={20} />
+                <span>Calendar</span>
+              </Link>
 
-            <button 
-              type="button"
-              onClick={() => logout()} 
-              className="mobile-tab-item"
-              title="Log Out"
-            >
-              <LogOut size={20} />
-              <span>Sign Out</span>
-            </button>
-          </>
+              <Link 
+                to="/parent/dashboard?tab=practice" 
+                className={`mobile-tab-item ${location.search.includes('tab=practice') ? 'active' : ''}`}
+              >
+                <Layers size={20} />
+                <span>Practice</span>
+              </Link>
+
+              <Link 
+                to="/parent/dashboard?tab=progress" 
+                className={`mobile-tab-item ${location.search.includes('tab=progress') ? 'active' : ''}`}
+              >
+                <BarChart3 size={20} />
+                <span>Progress</span>
+              </Link>
+            </>
+          ) : (
+            <>
+              <Link 
+                to={dashboardPath} 
+                className={`mobile-tab-item ${currentPath.includes('/dashboard') ? 'active' : ''}`}
+              >
+                <LayoutDashboard size={20} />
+                <span>Dashboard</span>
+              </Link>
+
+              <Link 
+                to="/calendar" 
+                className={`mobile-tab-item ${currentPath === '/calendar' ? 'active' : ''}`}
+              >
+                <CalendarIcon size={20} />
+                <span>Calendar</span>
+              </Link>
+
+              <Link 
+                to="/profile" 
+                className={`mobile-tab-item ${currentPath === '/profile' ? 'active' : ''}`}
+              >
+                <UserIcon size={20} />
+                <span>Profile</span>
+              </Link>
+
+              <button 
+                type="button"
+                onClick={() => logout()} 
+                className="mobile-tab-item"
+                title="Log Out"
+              >
+                <LogOut size={20} />
+                <span>Sign Out</span>
+              </button>
+            </>
+          )
         ) : (
           <>
             <Link 

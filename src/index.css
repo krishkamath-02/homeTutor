@@ -550,6 +550,115 @@ a:hover {
   box-shadow: 0 2px 8px rgba(79, 70, 229, 0.25);
 }
 
+/* PRD v0.1 Design tokens: Calm warm background, Teal accent, Amber date chips */
+:root {
+  --teal: #0D9488;
+  --teal-hover: #0F766E;
+  --amber: #D97706;
+  --amber-bg: #FEF3C7;
+  --amber-text: #92400E;
+}
+
+.btn-teal {
+  background: var(--teal);
+  color: white;
+  border: none;
+  border-radius: var(--radius-md);
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  transition: var(--transition);
+}
+
+.btn-teal:hover {
+  background: var(--teal-hover);
+  transform: translateY(-1px);
+}
+
+.chip-amber {
+  background: var(--amber-bg);
+  color: var(--amber-text);
+  border: 1px solid #FCD34D;
+  border-radius: 1rem;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  white-space: nowrap;
+}
+
+.chip-teal {
+  background: rgba(13, 148, 136, 0.1);
+  color: var(--teal);
+  border: 1px solid rgba(13, 148, 136, 0.25);
+  border-radius: 1rem;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  white-space: nowrap;
+}
+
+.chip-difficulty-easy {
+  background: #DCFCE7;
+  color: #166534;
+  border: 1px solid #86EFAC;
+}
+
+.chip-difficulty-med {
+  background: #FEF3C7;
+  color: #92400E;
+  border: 1px solid #FCD34D;
+}
+
+.chip-difficulty-hard {
+  background: #FEE2E2;
+  color: #991B1B;
+  border: 1px solid #FCA5A5;
+}
+
+/* Spelling card styling for Grade 2 vocabulary */
+.spelling-card {
+  background: var(--surface);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  transition: var(--transition);
+  position: relative;
+}
+
+.spelling-card:hover {
+  border-color: var(--teal);
+  box-shadow: 0 4px 12px rgba(13, 148, 136, 0.1);
+}
+
+/* Worksheet library card */
+.worksheet-library-card {
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  transition: var(--transition);
+}
+
+.worksheet-library-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 18px rgba(0,0,0,0.06);
+  border-color: var(--primary);
+}
+
 .history-item-card {
   padding: 1.15rem;
   border: 1px solid var(--border);

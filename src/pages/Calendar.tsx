@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import useAuthStore from '../store/authStore';
 import useAppStore from '../store/appStore';
-import useCalendarStore, { type CalendarEvent, type CalendarEventType } from '../store/calendarStore';
+import useCalendarStore, { type CalendarEvent, type CalendarEventType, type ReminderRule } from '../store/calendarStore';
 
 type ViewMode = 'day' | 'week' | 'month';
 
@@ -58,6 +58,7 @@ export const CalendarPage = () => {
     const [formEndTime, setFormEndTime] = useState('17:15');
     const [formDescription, setFormDescription] = useState('');
     const [formTestId, setFormTestId] = useState<string>('');
+    const [formReminderRule, setFormReminderRule] = useState<ReminderRule>('1_day_before');
 
     useEffect(() => {
         fetchEvents();
@@ -216,6 +217,7 @@ export const CalendarPage = () => {
         setFormEndTime('17:15');
         setFormDescription('');
         setFormTestId('');
+        setFormReminderRule('1_day_before');
         setIsModalOpen(true);
     };
 
@@ -231,6 +233,7 @@ export const CalendarPage = () => {
         setFormEndTime(event.endTime || '17:00');
         setFormDescription(event.description || '');
         setFormTestId(event.testId || '');
+        setFormReminderRule(event.reminderRule || '1_day_before');
         setSelectedEventForView(null);
         setIsModalOpen(true);
     };
@@ -253,6 +256,7 @@ export const CalendarPage = () => {
                 startTime: formStartTime,
                 endTime: formEndTime,
                 description: formDescription.trim(),
+                reminderRule: formReminderRule,
                 testId: formType === 'test_prep' ? (formTestId || undefined) : undefined
             });
         } else {
@@ -267,6 +271,7 @@ export const CalendarPage = () => {
                 startTime: formStartTime,
                 endTime: formEndTime,
                 description: formDescription.trim(),
+                reminderRule: formReminderRule,
                 isCompleted: false,
                 testId: formType === 'test_prep' ? (formTestId || undefined) : undefined
             });
@@ -1348,6 +1353,23 @@ export const CalendarPage = () => {
                                     </select>
                                 </div>
                             )}
+
+                            {/* Reminder Notification Choice Rule (FR-7) */}
+                            <div className="input-group" style={{ marginBottom: '1rem' }}>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                                    <Clock size={14} color="var(--primary)" />
+                                    <span>Reminder Rule (FR-7)</span>
+                                </label>
+                                <select
+                                    className="input"
+                                    value={formReminderRule}
+                                    onChange={(e) => setFormReminderRule(e.target.value as ReminderRule)}
+                                >
+                                    <option value="1_day_before">1 day before (Default notification)</option>
+                                    <option value="2_days_before">2 days before (Advance revision notice)</option>
+                                    <option value="same_morning">Same morning (Day-of prompt)</option>
+                                </select>
+                            </div>
 
                             {/* Description / Instructions */}
                             <div className="input-group" style={{ marginBottom: '1.5rem' }}>

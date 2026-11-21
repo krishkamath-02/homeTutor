@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { supabase } from '../lib/supabase';
 import type { DatabaseTest, DatabaseQuestion, RoughWorkEvaluation } from '../lib/supabase';
 import useAuthStore from './authStore';
-import { generateQuestionsFromImages, fileToBase64, evaluateHandwrittenWork, verifyDailyHomework, type HomeworkVerificationResult } from '../lib/gemini';
+import { generateQuestionsFromImages, fileToBase64, evaluateHandwrittenWork, verifyDailyHomework, type HomeworkVerificationResult, type SpellingListResult, type MarkedTestAnalysisResult } from '../lib/gemini';
 import type { Difficulty } from '../lib/gemini';
 import { uploadHomeworkFiles, uploadRoughWorkFile } from '../lib/storage';
 
@@ -48,6 +48,14 @@ export interface DailyHomework {
     createdAt: string;
     assignmentImageUrls: string[]; // parent uploaded photos of school homework from WhatsApp / Teams
     originalFiles?: string[]; // convenience alias
+    supportingMaterialUrls?: string[]; // supporting textbook pages, chapter pages, or worksheets uploaded by parent
+    extractedContent?: string; // AI OCR extracted questions/text from supporting textbook or worksheet pages
+
+    // Reminder & instructions
+    reminderRule?: '1_day_before' | '2_days_before' | 'same_morning';
+    isTestOrDictation?: boolean;
+    hasCorrectionsNotice?: boolean;
+    requiredFilesPrompt?: string;
 
     // Student submission
     submissionStatus: 'pending' | 'submitted' | 'verified_complete' | 'needs_revision';
@@ -59,6 +67,17 @@ export interface DailyHomework {
     // AI Verification Result
     verification?: HomeworkVerificationResult;
     verificationResult?: HomeworkVerificationResult; // convenience alias
+}
+
+export interface SavedWorksheet {
+    id: string;
+    title: string;
+    subject: string;
+    topic?: string;
+    imageUrls: string[];
+    uploadedAt: string;
+    source: 'upload' | 'teams' | 'homework';
+    difficulty?: Difficulty;
 }
 
 export interface StudentProgressItem {
@@ -83,6 +102,9 @@ export interface LinkedChild {
 interface AppState {
     tests: Test[];
     dailyHomeworkList: DailyHomework[];
+    savedWorksheets: SavedWorksheet[];
+    spellingLists: SpellingListResult[];
+    testCorrections: MarkedTestAnalysisResult[];
     progress: StudentProgressItem[];
     childrenList: LinkedChild[];
     isLoading: boolean;
@@ -98,9 +120,18 @@ interface AppState {
         source: 'whatsapp' | 'teams' | 'diary' | 'manual';
         dueDate?: string;
         files: File[];
+        reminderRule?: '1_day_before' | '2_days_before' | 'same_morning';
+        isTestOrDictation?: boolean;
+        hasCorrectionsNotice?: boolean;
+        requiredFilesPrompt?: string;
     }) => Promise<DailyHomework>;
     submitAndVerifyDailyHomework: (homeworkId: string, files: File[], notes?: string) => Promise<DailyHomework | null>;
+    addSupportingFilesToHomework: (homeworkId: string, files: File[], extractedContent?: string) => Promise<DailyHomework | null>;
+    updateDailyHomework: (homeworkId: string, updates: Partial<DailyHomework>) => void;
     deleteDailyHomework: (homeworkId: string) => Promise<void>;
+    saveWorksheetToLibrary: (worksheet: Omit<SavedWorksheet, 'id' | 'uploadedAt'>) => Promise<SavedWorksheet>;
+    saveSpellingList: (list: SpellingListResult) => void;
+    saveTestCorrection: (correction: MarkedTestAnalysisResult) => void;
     fetchProgress: (targetId?: string) => Promise<void>;
     fetchChildren: () => Promise<void>;
     uploadHomework: (files: File[], subject: string, dueDate: string | null) => Promise<string | null>;
@@ -111,275 +142,99 @@ interface AppState {
     submitTest: (testId: string, answers: Record<string, number>) => Promise<void>;
 }
 
-export const DEMO_SAMPLE_TESTS: Test[] = [
-    {
-        id: 'demo-test-1',
-        title: 'Maths: Algebraic Expressions & Equations',
-        subject: 'Mathematics',
-        duration: '15 mins',
-        status: 'completed',
-        dueDate: '2026-11-15',
-        score: 85,
-        completedAt: new Date().toISOString(),
-        studentAnswers: {
-            'demo-q1': 1,
-            'demo-q2': 0,
-            'demo-q3': 2,
-        },
-        roughWorkUrl: 'https://images.unsplash.com/photo-1596495577886-d920f1fb7238?w=800&auto=format&fit=crop&q=80',
-        roughWorkEvaluation: {
-            transcribedSummary: 'Student set up the linear equation 2x + 6 = 14 correctly, subtracted 6 to get 2x = 8, and divided by 2 to find x = 4.',
-            overallFeedback: 'Excellent step-by-step problem setup and clear handwriting. Method and final answer are completely accurate.',
-            accuracyScore: 90,
-            evaluatedAt: new Date().toISOString(),
-            stepMarks: {
-                'demo-q1': {
-                    questionNumber: 1,
-                    questionId: 'demo-q1',
-                    methodMark: 1,
-                    calculationMark: 1,
-                    finalMark: 1,
-                    maxMarks: 3,
-                    transcribedSteps: [
-                        'Line 1: 2x + 6 = 14',
-                        'Line 2: 2x = 14 - 6 = 8',
-                        'Line 3: x = 8 / 2 = 4'
-                    ],
-                    stepFeedback: 'Spot on execution from formula to final answer.',
-                    identifiedErrorType: null
-                },
-                'demo-q2': {
-                    questionNumber: 2,
-                    questionId: 'demo-q2',
-                    methodMark: 1,
-                    calculationMark: 0,
-                    finalMark: 0,
-                    maxMarks: 3,
-                    transcribedSteps: [
-                        'Line 1: 3(x - 2) = 9',
-                        'Line 2: 3x - 2 = 9 (Forgot to distribute 3 to 2)',
-                        'Line 3: 3x = 11, x = 11/3'
-                    ],
-                    stepFeedback: 'Identified correct linear structure but forgot distributive property over parentheses.',
-                    identifiedErrorType: 'Distributive property omission'
-                }
-            }
-        },
-        questions: [
-            {
-                id: 'demo-q1',
-                text: 'Solve for x: 2x + 6 = 14',
-                options: ['x = 3', 'x = 4', 'x = 5', 'x = 10'],
-                correctAnswerIndex: 1,
-                explanation: 'Subtract 6 from both sides to get 2x = 8. Divide both sides by 2 to get x = 4.',
-                topic: 'Linear Equations',
-                socraticHint: 'What happens if you subtract 6 from both sides first?',
-                distractorAnalysis: {
-                    '0': 'Arithmetic error during subtraction (14 - 6 = 6 instead of 8).',
-                    '2': 'Added 6 instead of subtracting (2x = 20, x = 10 / 2 = 5).',
-                    '3': 'Subtracted 6 but forgot to divide by coefficient 2.'
-                }
-            },
-            {
-                id: 'demo-q2',
-                text: 'Expand and solve: 3(x - 2) = 9',
-                options: ['x = 5', 'x = 3', 'x = 11/3', 'x = 15'],
-                correctAnswerIndex: 0,
-                explanation: 'Distribute 3: 3x - 6 = 9. Add 6 to both sides: 3x = 15. Divide by 3: x = 5.',
-                topic: 'Distributive Property',
-                socraticHint: 'Remember to multiply the 3 outside the brackets by both terms inside.',
-                distractorAnalysis: {
-                    '1': 'Divided 9 by 3 but forgot the -2 term inside parentheses.',
-                    '2': 'Distributed 3 to x but forgot to multiply 3 with 2 (wrote 3x - 2 = 9).',
-                    '3': 'Added 6 to 9 but forgot to divide by 3 at the end.'
-                }
-            },
-            {
-                id: 'demo-q3',
-                text: 'If 5y = 35, what is the value of y + 4?',
-                options: ['7', '9', '11', '14'],
-                correctAnswerIndex: 2,
-                explanation: 'Divide both sides by 5: y = 7. Then evaluate y + 4: 7 + 4 = 11.',
-                topic: 'Two-step Algebraic Evaluation',
-                socraticHint: 'First solve for y, then remember to add 4 to your answer!',
-                distractorAnalysis: {
-                    '0': 'Found y = 7 correctly but forgot the second step of adding 4.',
-                    '1': 'Calculation error when adding 4 to 7 (7 + 2).',
-                    '3': 'Multiplied 7 by 2 instead of adding 4.'
-                }
-            }
-        ]
-    },
-    {
-        id: 'demo-test-2',
-        title: 'Science: Laws of Motion & Friction',
-        subject: 'Science',
-        duration: '15 mins',
-        status: 'pending',
-        dueDate: '2026-11-20',
-        questions: [
-            {
-                id: 'demo-s1',
-                text: 'Which of Newton\'s laws explains why passengers jerk forward when a bus suddenly stops?',
-                options: ['Newton\'s First Law (Inertia)', 'Newton\'s Second Law (F = ma)', 'Newton\'s Third Law (Action-Reaction)', 'Law of Gravitation'],
-                correctAnswerIndex: 0,
-                explanation: 'Newton\'s First Law states an object in motion stays in motion unless acted on by an external force. Passengers keep moving forward due to inertia.',
-                topic: 'Newton\'s Laws',
-                socraticHint: 'Think about the tendency of a body to resist changes in its state of motion.',
-                distractorAnalysis: {
-                    '1': 'Confused inertia with the quantitative calculation of force (F=ma).',
-                    '2': 'Confused action-reaction pairs with the tendency of an object to resist sudden stops.',
-                    '3': 'Gravitation governs attraction between masses, not passenger inertia.'
-                }
-            },
-            {
-                id: 'demo-s2',
-                text: 'A force of 20 N acts on a mass of 4 kg. What is the acceleration produced?',
-                options: ['80 m/s²', '16 m/s²', '5 m/s²', '0.2 m/s²'],
-                correctAnswerIndex: 2,
-                explanation: 'According to F = ma, a = F / m = 20 N / 4 kg = 5 m/s².',
-                topic: 'Force and Acceleration',
-                socraticHint: 'Use the formula a = F / m.',
-                distractorAnalysis: {
-                    '0': 'Multiplied force and mass (20 * 4) instead of dividing.',
-                    '1': 'Subtracted mass from force (20 - 4).',
-                    '3': 'Divided mass by force (4 / 20) instead of force by mass.'
-                }
-            }
-        ]
-    }
-];
-
-export const DEMO_SAMPLE_PROGRESS: StudentProgressItem[] = [
-    {
-        id: 'prog-1',
-        studentId: 'superuser-student-001',
-        subject: 'Mathematics',
-        topic: 'Linear Equations',
-        masteryScore: 88,
-        attemptsCount: 3,
-        lastPracticedAt: new Date().toISOString()
-    },
-    {
-        id: 'prog-2',
-        studentId: 'superuser-student-001',
-        subject: 'Mathematics',
-        topic: 'Distributive Property',
-        masteryScore: 45,
-        attemptsCount: 2,
-        lastPracticedAt: new Date().toISOString()
-    },
-    {
-        id: 'prog-3',
-        studentId: 'superuser-student-001',
-        subject: 'Science',
-        topic: 'Newton\'s Laws',
-        masteryScore: 92,
-        attemptsCount: 4,
-        lastPracticedAt: new Date().toISOString()
-    }
-];
-
-export const DEMO_SAMPLE_DAILY_HOMEWORK: DailyHomework[] = [
-    {
-        id: 'dh-demo-1',
-        parentId: 'superuser-parent-001',
-        childId: 'superuser-student-001',
-        childName: 'Alex',
-        title: 'Math Ex 4.2 Fractions (Q1 to Q8)',
-        subject: 'Math',
-        description: 'Teacher shared worksheet photo on Class WhatsApp Group. Solve questions in math notebook with full working.',
-        source: 'whatsapp',
-        dueDate: 'Today',
-        createdAt: new Date().toISOString(),
-        assignmentImageUrls: [
-            'https://images.unsplash.com/photo-1635070041078-e363dbe005cb?w=800&auto=format&fit=crop&q=80'
-        ],
-        originalFiles: [
-            'https://images.unsplash.com/photo-1635070041078-e363dbe005cb?w=800&auto=format&fit=crop&q=80'
-        ],
-        submissionStatus: 'pending',
-        status: 'pending'
-    },
-    {
-        id: 'dh-demo-2',
-        parentId: 'superuser-parent-001',
-        childId: 'superuser-student-001',
-        childName: 'Alex',
-        title: 'Science Ch 3 Separation of Substances Q&A',
-        subject: 'Science',
-        description: 'Uploaded from MS Teams class assignment tab. Answer textbook questions 1-5.',
-        source: 'teams',
-        dueDate: 'Yesterday',
-        createdAt: new Date(Date.now() - 86400000).toISOString(),
-        assignmentImageUrls: [
-            'https://images.unsplash.com/photo-1532094349884-543bc11b234d?w=800&auto=format&fit=crop&q=80'
-        ],
-        originalFiles: [
-            'https://images.unsplash.com/photo-1532094349884-543bc11b234d?w=800&auto=format&fit=crop&q=80'
-        ],
-        submissionStatus: 'verified_complete',
-        status: 'verified',
-        studentSubmissionUrls: [
-            'https://images.unsplash.com/photo-1596495577886-d920f1fb7238?w=800&auto=format&fit=crop&q=80'
-        ],
-        studentSubmissionFiles: [
-            'https://images.unsplash.com/photo-1596495577886-d920f1fb7238?w=800&auto=format&fit=crop&q=80'
-        ],
-        submittedAt: new Date(Date.now() - 3600000).toISOString(),
-        verification: {
-            isComplete: true,
-            completenessScore: 95,
-            summary: 'All 5 textbook questions identified from MS Teams assignment were solved in student notebook.',
-            feedback: 'Neat presentation with proper diagrams of filtration and decantation. Handwriting is clear and answers are thorough.',
-            coachingFeedback: 'Neat presentation with proper diagrams of filtration and decantation. Handwriting is clear and answers are thorough.',
-            completedQuestions: ['Q1: Handpicking definition', 'Q2: Threshing & Winnowing', 'Q3: Sieving application', 'Q4: Sedimentation vs Decantation', 'Q5: Evaporation experiment'],
-            missingOrIncompleteQuestions: [],
-            missingQuestions: [],
-            status: 'verified_complete',
-            accuracyNotes: 'All key definitions and scientific terms were used correctly.',
-            evaluatedAt: new Date(Date.now() - 3500000).toISOString(),
-        },
-        verificationResult: {
-            isComplete: true,
-            completenessScore: 95,
-            summary: 'All 5 textbook questions identified from MS Teams assignment were solved in student notebook.',
-            feedback: 'Neat presentation with proper diagrams of filtration and decantation. Handwriting is clear and answers are thorough.',
-            coachingFeedback: 'Neat presentation with proper diagrams of filtration and decantation. Handwriting is clear and answers are thorough.',
-            completedQuestions: ['Q1: Handpicking definition', 'Q2: Threshing & Winnowing', 'Q3: Sieving application', 'Q4: Sedimentation vs Decantation', 'Q5: Evaporation experiment'],
-            missingOrIncompleteQuestions: [],
-            missingQuestions: [],
-            status: 'verified_complete',
-            accuracyNotes: 'All key definitions and scientific terms were used correctly.',
-            evaluatedAt: new Date(Date.now() - 3500000).toISOString(),
-        }
-    }
-];
+export const DEMO_SAMPLE_TESTS: Test[] = [];
+export const DEMO_SAMPLE_PROGRESS: StudentProgressItem[] = [];
+export const DEMO_SAMPLE_DAILY_HOMEWORK: DailyHomework[] = [];
+export const DEMO_SAVED_WORKSHEETS: SavedWorksheet[] = [];
 
 const useAppStore = create<AppState>((set, get) => ({
     tests: [],
     dailyHomeworkList: [],
+    savedWorksheets: (() => {
+        try {
+            const raw = localStorage.getItem('hometutor_saved_worksheets');
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                if (Array.isArray(parsed)) {
+                    return parsed.filter((w: any) => !w.id?.startsWith('ws-sample-'));
+                }
+            }
+        } catch {}
+        return [];
+    })(),
+    spellingLists: (() => {
+        try {
+            const raw = localStorage.getItem('hometutor_spelling_lists');
+            return raw ? JSON.parse(raw) : [];
+        } catch {
+            return [];
+        }
+    })(),
+    testCorrections: (() => {
+        try {
+            const raw = localStorage.getItem('hometutor_test_corrections');
+            return raw ? JSON.parse(raw) : [];
+        } catch {
+            return [];
+        }
+    })(),
     progress: [],
     childrenList: [],
     isLoading: false,
     isGenerating: false,
+
+    saveWorksheetToLibrary: async (data) => {
+        const newWs: SavedWorksheet = {
+            ...data,
+            id: `ws-${Date.now()}`,
+            uploadedAt: new Date().toISOString()
+        };
+        const updated = [newWs, ...get().savedWorksheets];
+        set({ savedWorksheets: updated });
+        try {
+            localStorage.setItem('hometutor_saved_worksheets', JSON.stringify(updated));
+        } catch (e) {
+            console.warn('LocalStorage save error:', e);
+        }
+        return newWs;
+    },
+
+    saveSpellingList: (list: SpellingListResult) => {
+        const updated = [list, ...get().spellingLists.filter(l => l.chapterTitle !== list.chapterTitle)];
+        set({ spellingLists: updated });
+        try {
+            localStorage.setItem('hometutor_spelling_lists', JSON.stringify(updated));
+        } catch (e) {
+            console.warn('LocalStorage save error:', e);
+        }
+    },
+
+    saveTestCorrection: (correction: MarkedTestAnalysisResult) => {
+        const updated = [correction, ...get().testCorrections];
+        set({ testCorrections: updated });
+        try {
+            localStorage.setItem('hometutor_test_corrections', JSON.stringify(updated));
+        } catch (e) {
+            console.warn('LocalStorage save error:', e);
+        }
+    },
 
     fetchDailyHomework: async () => {
         try {
             const raw = localStorage.getItem('hometutor_daily_homework');
             if (raw) {
                 const parsed = JSON.parse(raw);
-                if (Array.isArray(parsed) && parsed.length > 0) {
-                    set({ dailyHomeworkList: parsed });
+                if (Array.isArray(parsed)) {
+                    const realItems = parsed.filter((h: any) => !h.id?.startsWith('dh-demo-'));
+                    set({ dailyHomeworkList: realItems });
+                    localStorage.setItem('hometutor_daily_homework', JSON.stringify(realItems));
                     return;
                 }
             }
-            // Seed with sample data for demonstration / superuser testing
-            localStorage.setItem('hometutor_daily_homework', JSON.stringify(DEMO_SAMPLE_DAILY_HOMEWORK));
-            set({ dailyHomeworkList: DEMO_SAMPLE_DAILY_HOMEWORK });
+            set({ dailyHomeworkList: [] });
         } catch (e) {
             console.warn('Error loading daily homework:', e);
-            set({ dailyHomeworkList: DEMO_SAMPLE_DAILY_HOMEWORK });
+            set({ dailyHomeworkList: [] });
         }
     },
 
@@ -412,6 +267,10 @@ const useAppStore = create<AppState>((set, get) => ({
             createdAt: new Date().toISOString(),
             assignmentImageUrls: imageUrls,
             originalFiles: imageUrls,
+            reminderRule: data.reminderRule || '1_day_before',
+            isTestOrDictation: data.isTestOrDictation || false,
+            hasCorrectionsNotice: data.hasCorrectionsNotice || false,
+            requiredFilesPrompt: data.requiredFilesPrompt,
             submissionStatus: 'pending',
             status: 'pending'
         };
@@ -422,6 +281,17 @@ const useAppStore = create<AppState>((set, get) => ({
             localStorage.setItem('hometutor_daily_homework', JSON.stringify(updated));
         } catch (e) {
             console.warn('LocalStorage save warning:', e);
+        }
+
+        // FR-11: Every uploaded worksheet is saved in a library
+        if (imageUrls.length > 0) {
+            get().saveWorksheetToLibrary({
+                title: data.title,
+                subject: data.subject,
+                topic: data.description || `${data.subject} homework`,
+                imageUrls,
+                source: data.source === 'teams' ? 'teams' : 'homework'
+            });
         }
 
         return newHomework;
@@ -487,6 +357,70 @@ const useAppStore = create<AppState>((set, get) => ({
         return updatedItem;
     },
 
+    addSupportingFilesToHomework: async (homeworkId: string, files: File[], extractedContent?: string) => {
+        const item = get().dailyHomeworkList.find(h => h.id === homeworkId);
+        if (!item || files.length === 0) return null;
+
+        const newUrls = await Promise.all(
+            files.map(async (file) => {
+                try {
+                    const b64 = await fileToBase64(file);
+                    return `data:${file.type || 'image/jpeg'};base64,${b64}`;
+                } catch {
+                    return URL.createObjectURL(file);
+                }
+            })
+        );
+
+        const existingAssignmentUrls = item.assignmentImageUrls || [];
+        const existingOriginalUrls = item.originalFiles || [];
+        const existingSupportingUrls = item.supportingMaterialUrls || [];
+
+        const updatedAssignmentUrls = [...existingAssignmentUrls, ...newUrls];
+        const updatedOriginalUrls = [...existingOriginalUrls, ...newUrls];
+        const updatedSupportingUrls = [...existingSupportingUrls, ...newUrls];
+
+        const updatedItem: DailyHomework = {
+            ...item,
+            assignmentImageUrls: updatedAssignmentUrls,
+            originalFiles: updatedOriginalUrls,
+            supportingMaterialUrls: updatedSupportingUrls,
+            extractedContent: extractedContent || item.extractedContent
+        };
+
+        const updatedList = get().dailyHomeworkList.map(h => h.id === homeworkId ? updatedItem : h);
+        set({ dailyHomeworkList: updatedList });
+
+        try {
+            localStorage.setItem('hometutor_daily_homework', JSON.stringify(updatedList));
+        } catch (e) {
+            console.warn('LocalStorage save warning:', e);
+        }
+
+        // FR-11: Save uploaded supporting worksheet/pages to library for later practice
+        if (newUrls.length > 0) {
+            get().saveWorksheetToLibrary({
+                title: `${item.title} (Supporting Material)`,
+                subject: item.subject,
+                topic: item.description || `${item.subject} textbook pages`,
+                imageUrls: newUrls,
+                source: 'homework'
+            });
+        }
+
+        return updatedItem;
+    },
+
+    updateDailyHomework: (homeworkId: string, updates: Partial<DailyHomework>) => {
+        const updatedList = get().dailyHomeworkList.map(h => h.id === homeworkId ? { ...h, ...updates } : h);
+        set({ dailyHomeworkList: updatedList });
+        try {
+            localStorage.setItem('hometutor_daily_homework', JSON.stringify(updatedList));
+        } catch (e) {
+            console.warn('LocalStorage save warning:', e);
+        }
+    },
+
     deleteDailyHomework: async (homeworkId: string) => {
         const updated = get().dailyHomeworkList.filter(h => h.id !== homeworkId);
         set({ dailyHomeworkList: updated });
@@ -524,10 +458,6 @@ const useAppStore = create<AppState>((set, get) => ({
             if (testsError) throw testsError;
 
             if (!testsData || testsData.length === 0) {
-                if (user.id.startsWith('superuser-')) {
-                    set({ tests: DEMO_SAMPLE_TESTS, isLoading: false });
-                    return;
-                }
                 set({ tests: [], isLoading: false });
                 return;
             }
@@ -576,9 +506,7 @@ const useAppStore = create<AppState>((set, get) => ({
             set({ tests: mappedTests });
         } catch (error) {
             console.error('Error fetching tests:', error);
-            if (user.id.startsWith('superuser-')) {
-                set({ tests: DEMO_SAMPLE_TESTS });
-            }
+            set({ tests: [] });
         } finally {
             set({ isLoading: false });
         }
@@ -614,14 +542,12 @@ const useAppStore = create<AppState>((set, get) => ({
                         lastPracticedAt: p.last_practiced_at
                     }))
                 });
-            } else if (user.id.startsWith('superuser-') || error) {
-                set({ progress: DEMO_SAMPLE_PROGRESS });
+            } else {
+                set({ progress: [] });
             }
         } catch (err) {
             console.error('Error fetching student progress:', err);
-            if (user.id.startsWith('superuser-')) {
-                set({ progress: DEMO_SAMPLE_PROGRESS });
-            }
+            set({ progress: [] });
         }
     },
 

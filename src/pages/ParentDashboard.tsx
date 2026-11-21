@@ -1,20 +1,27 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { 
-    Upload, FileText, CheckCircle, BarChart3, Book, Sparkles, 
+    Upload, FileText, CheckCircle, BarChart3, Book, BookOpen, Sparkles, 
     Trash2, Image, AlertTriangle, Printer, Play, 
     User as UserIcon, Zap, Lock, Users, TrendingUp, Calendar,
-    Eye, X, Camera, CheckCircle2, Smartphone, History, Search, Award
+    Eye, X, Camera, CheckCircle2, Smartphone, History, Search, Award,
+    CheckSquare, Layers, Volume2
 } from 'lucide-react';
 import PrintableTest from '../components/PrintableTest';
 import TestTaker from '../components/TestTaker';
 import TestReview from '../components/TestReview';
 import UpgradeModal from '../components/UpgradeModal';
+import TeamsUploadModal from '../components/TeamsUploadModal';
+import ManualHomeworkModal from '../components/ManualHomeworkModal';
+import SpellingListModal from '../components/SpellingListModal';
+import WorksheetLibraryModal from '../components/WorksheetLibraryModal';
+import TestCorrectionsModal from '../components/TestCorrectionsModal';
+import ProgressReportView from '../components/ProgressReportView';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import useAuthStore from '../store/authStore';
 import useAppStore, { type Test, type DailyHomework } from '../store/appStore';
 import { supabase } from '../lib/supabase';
-import { detectSubjectFromImage, type Difficulty } from '../lib/gemini';
+import { detectSubjectFromImage, extractTeamsPost, extractContentFromHomeworkPage, type Difficulty } from '../lib/gemini';
 import { checkImageClarity, type ClarityResult } from '../utils/imageClarity';
 
 const SUBJECTS = [
@@ -48,6 +55,9 @@ const ParentDashboard = () => {
     const deleteTest = useAppStore((state) => state.deleteTest);
     const addDailyHomework = useAppStore((state) => state.addDailyHomework);
     const deleteDailyHomework = useAppStore((state) => state.deleteDailyHomework);
+    const submitAndVerifyDailyHomework = useAppStore((state) => state.submitAndVerifyDailyHomework);
+    const addSupportingFilesToHomework = useAppStore((state) => state.addSupportingFilesToHomework);
+    const updateDailyHomework = useAppStore((state) => state.updateDailyHomework);
     const fetchDailyHomework = useAppStore((state) => state.fetchDailyHomework);
     const isGenerating = useAppStore((state) => state.isGenerating);
     const fetchTests = useAppStore((state) => state.fetchTests);
@@ -109,11 +119,35 @@ const ParentDashboard = () => {
     const [remedialGeneratingTopic, setRemedialGeneratingTopic] = useState<string | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
-    // Dashboard Tabs
-    const [activeTab, setActiveTab] = useState<'homework_and_tests' | 'history' | 'analytics'>('homework_and_tests');
+    const location = useLocation();
+
+    // Dashboard Tabs aligned with PRD screens: Home (0), Today (2), Practice (4), Corrections (5), Progress (6), History
+    type DashboardTab = 'home' | 'today' | 'practice' | 'corrections' | 'progress' | 'history' | 'homework_and_tests' | 'analytics';
+    const [activeTab, setActiveTab] = useState<DashboardTab>('home');
     const [creationMode, setCreationMode] = useState<'daily_homework' | 'generate_test'>('daily_homework');
     const [historyFilter, setHistoryFilter] = useState<'all' | 'uploaded_homework' | 'completed_homework' | 'generated_tests' | 'completed_tests'>('all');
     const [historySearchQuery, setHistorySearchQuery] = useState('');
+
+    // Synchronize tab with URL query parameter (e.g. from bottom bar)
+    useEffect(() => {
+        const params = new URLSearchParams(location.search);
+        const tabParam = params.get('tab');
+        if (tabParam === 'today') setActiveTab('today');
+        else if (tabParam === 'practice') setActiveTab('practice');
+        else if (tabParam === 'corrections') setActiveTab('corrections');
+        else if (tabParam === 'progress') setActiveTab('progress');
+        else if (tabParam === 'history') setActiveTab('history');
+        else if (tabParam === 'home') setActiveTab('home');
+    }, [location.search]);
+
+    // PRD Prototype Modals State
+    const [isTeamsModalOpen, setIsTeamsModalOpen] = useState(false);
+    const [isManualModalOpen, setIsManualModalOpen] = useState(false);
+    const [isSpellingModalOpen, setIsSpellingModalOpen] = useState(false);
+    const [spellingChapterTitle, setSpellingChapterTitle] = useState('Chapter 4: The Friendly Whale');
+    const [isWorksheetLibraryOpen, setIsWorksheetLibraryOpen] = useState(false);
+    const [isCorrectionsModalOpen, setIsCorrectionsModalOpen] = useState(false);
+    const [correctionsSubject, setCorrectionsSubject] = useState('Math');
 
     // Daily Homework Form State
     const [hwTitle, setHwTitle] = useState('');
@@ -141,6 +175,35 @@ const ParentDashboard = () => {
         ? dailyHomeworkList
         : dailyHomeworkList.filter(h => h.childId === selectedChildId);
 
+    const [isAutoReadingHw, setIsAutoReadingHw] = useState(false);
+    const [verifyingHwId, setVerifyingHwId] = useState<string | null>(null);
+    const [isVerifyingNotebook, setIsVerifyingNotebook] = useState(false);
+    const parentNotebookInputRef = useRef<HTMLInputElement>(null);
+
+    const autoReadHwFile = async (file: File) => {
+        setIsAutoReadingHw(true);
+        setHwErrorMsg(null);
+        try {
+            const extracted = await extractTeamsPost(file);
+            if (extracted.tasks && extracted.tasks.length > 0) {
+                const first = extracted.tasks[0];
+                if (!hwTitle.trim()) setHwTitle(`${first.subject}: ${first.task.slice(0, 45)}`);
+                if (first.subject) {
+                    const match = displaySubjects.find(s => s.toLowerCase() === first.subject.toLowerCase());
+                    if (match) setHwSubject(match);
+                }
+                if (first.dueDate && first.dueDate !== 'Tomorrow') setHwDueDate(first.dueDate);
+                if (!hwDescription.trim()) setHwDescription(first.task);
+                setHwSuccessMsg(`✨ AI auto-read: found ${extracted.tasks.length} task(s) from image!`);
+                setTimeout(() => setHwSuccessMsg(null), 3500);
+            }
+        } catch (err: any) {
+            console.warn('Auto-read image warning:', err);
+        } finally {
+            setIsAutoReadingHw(false);
+        }
+    };
+
     const handleHwFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         if (!e.target.files || e.target.files.length === 0) return;
         const newFiles = Array.from(e.target.files);
@@ -148,6 +211,118 @@ const ParentDashboard = () => {
         const newPreviews = newFiles.map(f => f.type.startsWith('image/') ? URL.createObjectURL(f) : '');
         setHwPreviews(prev => [...prev, ...newPreviews]);
         setHwErrorMsg(null);
+
+        // Auto-read details from first uploaded image if title is not yet set
+        const firstImg = newFiles.find(f => f.type.startsWith('image/'));
+        if (firstImg && !hwTitle.trim()) {
+            autoReadHwFile(firstImg);
+        }
+    };
+
+    const handleAutoReadClick = () => {
+        const firstImg = hwFiles.find(f => f.type.startsWith('image/')) || hwFiles[0];
+        if (firstImg) {
+            autoReadHwFile(firstImg);
+        }
+    };
+
+    const handleParentVerifySubmission = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        if (!verifyingHwId || !e.target.files || e.target.files.length === 0) return;
+        const files = Array.from(e.target.files);
+        setIsVerifyingNotebook(true);
+        try {
+            const verified = await submitAndVerifyDailyHomework(verifyingHwId, files);
+            if (verified) {
+                setViewingHomework(verified);
+            }
+        } catch (err: any) {
+            alert(err?.message || 'Failed to verify notebook pages.');
+        } finally {
+            setIsVerifyingNotebook(false);
+            setVerifyingHwId(null);
+            if (parentNotebookInputRef.current) parentNotebookInputRef.current.value = '';
+        }
+    };
+
+    const [uploadingSupportingHwId, setUploadingSupportingHwId] = useState<string | null>(null);
+    const [isUploadingSupporting, setIsUploadingSupporting] = useState(false);
+    const [isExtractingQuestions, setIsExtractingQuestions] = useState<string | null>(null);
+    const supportingFileInputRef = useRef<HTMLInputElement>(null);
+
+    const handleSupportingFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        if (!uploadingSupportingHwId || !e.target.files || e.target.files.length === 0) return;
+        const files = Array.from(e.target.files);
+        const hwId = uploadingSupportingHwId;
+        setIsUploadingSupporting(true);
+        try {
+            const currentItem = dailyHomeworkList.find(h => h.id === hwId);
+            const firstImg = files.find(f => f.type.startsWith('image/')) || files[0];
+            
+            // 1. Attach supporting files
+            const updated = await addSupportingFilesToHomework(hwId, files);
+
+            // 2. Automatically transcribe/extract questions from the textbook page if image provided
+            if (firstImg && currentItem) {
+                try {
+                    setIsExtractingQuestions(hwId);
+                    const questionsText = await extractContentFromHomeworkPage(
+                        firstImg,
+                        currentItem.subject,
+                        currentItem.title
+                    );
+                    if (questionsText) {
+                        updateDailyHomework(hwId, { extractedContent: questionsText });
+                    }
+                } catch (ocrErr) {
+                    console.warn('OCR question extraction notice:', ocrErr);
+                } finally {
+                    setIsExtractingQuestions(null);
+                }
+            }
+
+            if (updated) {
+                setHwSuccessMsg(`🎉 Added ${files.length} supporting textbook page(s) to ${updated.subject} homework!`);
+                setTimeout(() => setHwSuccessMsg(null), 3500);
+            }
+        } catch (err: any) {
+            alert(err?.message || 'Failed to attach supporting material.');
+        } finally {
+            setIsUploadingSupporting(false);
+            setUploadingSupportingHwId(null);
+            if (supportingFileInputRef.current) supportingFileInputRef.current.value = '';
+        }
+    };
+
+    const handleExtractQuestionsManually = async (hw: DailyHomework) => {
+        const pages = [...(hw.supportingMaterialUrls || []), ...(hw.assignmentImageUrls || [])];
+        if (pages.length === 0) {
+            alert('Please upload a textbook page or worksheet photo first.');
+            return;
+        }
+
+        setIsExtractingQuestions(hw.id);
+        try {
+            const url = pages[0];
+            let file: File;
+            if (url.startsWith('data:')) {
+                const res = await fetch(url);
+                const blob = await res.blob();
+                file = new File([blob], `${hw.subject}-page.jpg`, { type: blob.type || 'image/jpeg' });
+            } else {
+                throw new Error('Please upload a fresh page photo to extract questions.');
+            }
+
+            const questionsText = await extractContentFromHomeworkPage(file, hw.subject, hw.title);
+            if (questionsText) {
+                updateDailyHomework(hw.id, { extractedContent: questionsText });
+                setHwSuccessMsg(`✨ Transcribed questions from textbook page into ${hw.subject} homework!`);
+                setTimeout(() => setHwSuccessMsg(null), 3500);
+            }
+        } catch (err: any) {
+            alert(err?.message || 'Failed to extract questions from page.');
+        } finally {
+            setIsExtractingQuestions(null);
+        }
     };
 
     const removeHwFile = (index: number) => {
@@ -616,47 +791,643 @@ const ParentDashboard = () => {
                 </Link>
             </div>
 
-            {/* Mobile-Friendly Segmented Tab Navigation */}
-            <div className="dashboard-tabs-container" role="tablist" aria-label="Parent Dashboard Views">
+            {/* Mobile-Friendly Segmented Tab Navigation Aligned with PRD Screens */}
+            <div className="dashboard-tabs-container history-filter-scroll" role="tablist" aria-label="Parent Dashboard Views">
                 <button
                     type="button"
                     role="tab"
-                    id="tab-homework-tests"
-                    aria-controls="panel-homework-tests"
-                    aria-selected={activeTab === 'homework_and_tests'}
-                    className={`dashboard-tab-btn ${activeTab === 'homework_and_tests' ? 'active' : ''}`}
-                    onClick={() => setActiveTab('homework_and_tests')}
+                    id="tab-home"
+                    aria-selected={activeTab === 'home'}
+                    className={`dashboard-tab-btn ${activeTab === 'home' ? 'active' : ''}`}
+                    onClick={() => setActiveTab('home')}
                 >
-                    <Book size={16} /> Homework & Tests
+                    <Book size={16} /> Home
+                </button>
+                <button
+                    type="button"
+                    role="tab"
+                    id="tab-today"
+                    aria-selected={activeTab === 'today'}
+                    className={`dashboard-tab-btn ${activeTab === 'today' ? 'active' : ''}`}
+                    onClick={() => setActiveTab('today')}
+                >
+                    <CheckSquare size={16} /> Today's Plan
+                </button>
+                <button
+                    type="button"
+                    role="tab"
+                    id="tab-practice"
+                    aria-selected={activeTab === 'practice' || activeTab === 'homework_and_tests'}
+                    className={`dashboard-tab-btn ${activeTab === 'practice' || activeTab === 'homework_and_tests' ? 'active' : ''}`}
+                    onClick={() => setActiveTab('practice')}
+                >
+                    <Layers size={16} /> Practice &amp; Library
+                </button>
+                <button
+                    type="button"
+                    role="tab"
+                    id="tab-corrections"
+                    aria-selected={activeTab === 'corrections'}
+                    className={`dashboard-tab-btn ${activeTab === 'corrections' ? 'active' : ''}`}
+                    onClick={() => setActiveTab('corrections')}
+                >
+                    <Award size={16} /> Test Corrections
+                </button>
+                <button
+                    type="button"
+                    role="tab"
+                    id="tab-progress"
+                    aria-selected={activeTab === 'progress' || activeTab === 'analytics'}
+                    className={`dashboard-tab-btn ${activeTab === 'progress' || activeTab === 'analytics' ? 'active' : ''}`}
+                    onClick={() => setActiveTab('progress')}
+                >
+                    <TrendingUp size={16} /> Progress Report
                 </button>
                 <button
                     type="button"
                     role="tab"
                     id="tab-history"
-                    aria-controls="panel-history"
                     aria-selected={activeTab === 'history'}
                     className={`dashboard-tab-btn ${activeTab === 'history' ? 'active' : ''}`}
                     onClick={() => setActiveTab('history')}
                 >
-                    <History size={16} /> History & Archive ({filteredHomework.length + filteredTests.length})
-                </button>
-                <button
-                    type="button"
-                    role="tab"
-                    id="tab-analytics"
-                    aria-controls="panel-analytics"
-                    aria-selected={activeTab === 'analytics'}
-                    className={`dashboard-tab-btn ${activeTab === 'analytics' ? 'active' : ''}`}
-                    onClick={() => setActiveTab('analytics')}
-                >
-                    <TrendingUp size={16} /> Analytics & Mastery
+                    <History size={16} /> Archive ({filteredHomework.length + filteredTests.length})
                 </button>
             </div>
 
-            {/* TAB PANEL 1: DAILY HOMEWORK & PRACTICE TESTS */}
-            {activeTab === 'homework_and_tests' && (
-                <div id="panel-homework-tests" role="tabpanel" aria-labelledby="tab-homework-tests" style={{ display: 'flex', flexDirection: 'column', gap: '1.75rem' }}>
+            {/* SCREEN 0: HOME DASHBOARD */}
+            {activeTab === 'home' && (
+                <div id="panel-home" role="tabpanel" aria-labelledby="tab-home" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
                     
+                    {/* HERO ACTION: UPLOAD TODAY'S WORK (FR-1, FR-4) */}
+                    <div style={{
+                        background: 'linear-gradient(135deg, #0F766E 0%, #0D9488 50%, #14B8A6 100%)',
+                        borderRadius: 'var(--radius-xl)',
+                        padding: '1.75rem',
+                        color: 'white',
+                        boxShadow: '0 12px 32px rgba(13, 148, 136, 0.25)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '1rem'
+                    }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+                            <span style={{ background: 'rgba(255, 255, 255, 0.2)', padding: '0.35rem 0.75rem', borderRadius: '1rem', fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+                                Class II A · Daily Flow
+                            </span>
+                        </div>
+
+                        <div>
+                            <h2 style={{ fontSize: '1.5rem', fontWeight: 800, margin: 0, color: 'white', letterSpacing: '-0.02em' }}>
+                                Upload Today's School Work
+                            </h2>
+                            <p style={{ margin: '0.35rem 0 0', fontSize: '0.88rem', color: '#CCFBF1', lineHeight: 1.4, maxWidth: '520px' }}>
+                                Take a screenshot of the teacher's Teams post or snap an almanac photo. The app turns it into today's plan, test reminders, and practice sheets.
+                            </p>
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginTop: '0.25rem' }}>
+                            <button
+                                type="button"
+                                onClick={() => setIsTeamsModalOpen(true)}
+                                style={{
+                                    background: 'white',
+                                    color: '#0F766E',
+                                    border: 'none',
+                                    padding: '0.75rem 1.25rem',
+                                    borderRadius: 'var(--radius-md)',
+                                    fontWeight: 700,
+                                    fontSize: '0.9rem',
+                                    cursor: 'pointer',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '0.45rem',
+                                    boxShadow: '0 4px 12px rgba(0,0,0,0.1)'
+                                }}
+                            >
+                                <Camera size={18} />
+                                <span>Upload Teams Post (Screen 1)</span>
+                            </button>
+
+                            <button
+                                type="button"
+                                onClick={() => setIsManualModalOpen(true)}
+                                style={{
+                                    background: 'rgba(255, 255, 255, 0.15)',
+                                    color: 'white',
+                                    border: '1.5px solid rgba(255, 255, 255, 0.35)',
+                                    padding: '0.75rem 1.15rem',
+                                    borderRadius: 'var(--radius-md)',
+                                    fontWeight: 600,
+                                    fontSize: '0.88rem',
+                                    cursor: 'pointer',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '0.45rem'
+                                }}
+                            >
+                                <BookOpen size={17} />
+                                <span>Add from Almanac (Screen 0b)</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* SHORTCUT TILES (PRD Section 6 Screen 0) */}
+                    <div>
+                        <h3 style={{ fontSize: '1rem', fontWeight: 700, margin: '0 0 0.85rem', color: 'var(--text-main)' }}>
+                            Quick Shortcuts
+                        </h3>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '0.85rem' }}>
+                            <div 
+                                className="card hover-lift" 
+                                onClick={() => setActiveTab('today')}
+                                style={{ padding: '1rem', cursor: 'pointer', border: '1.5px solid var(--border)' }}
+                            >
+                                <div style={{ color: 'var(--teal)', marginBottom: '0.45rem' }}>
+                                    <CheckSquare size={22} />
+                                </div>
+                                <h4 style={{ margin: 0, fontSize: '0.92rem', fontWeight: 700 }}>Today's Plan</h4>
+                                <p style={{ margin: '0.2rem 0 0', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                    {filteredHomework.length} homework items by subject
+                                </p>
+                            </div>
+
+                            <div 
+                                className="card hover-lift" 
+                                onClick={() => setActiveTab('practice')}
+                                style={{ padding: '1rem', cursor: 'pointer', border: '1.5px solid var(--border)' }}
+                            >
+                                <div style={{ color: 'var(--primary)', marginBottom: '0.45rem' }}>
+                                    <Sparkles size={22} />
+                                </div>
+                                <h4 style={{ margin: 0, fontSize: '0.92rem', fontWeight: 700 }}>Check Homework</h4>
+                                <p style={{ margin: '0.2rem 0 0', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                    Compare notebook against answer steps
+                                </p>
+                            </div>
+
+                            <div 
+                                className="card hover-lift" 
+                                onClick={() => setIsCorrectionsModalOpen(true)}
+                                style={{ padding: '1rem', cursor: 'pointer', border: '1.5px solid var(--border)' }}
+                            >
+                                <div style={{ color: '#EF4444', marginBottom: '0.45rem' }}>
+                                    <Award size={22} />
+                                </div>
+                                <h4 style={{ margin: 0, fontSize: '0.92rem', fontWeight: 700 }}>Test Corrections</h4>
+                                <p style={{ margin: '0.2rem 0 0', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                    "Do corrections" guided walkthrough
+                                </p>
+                            </div>
+
+                            <div 
+                                className="card hover-lift" 
+                                onClick={() => setIsWorksheetLibraryOpen(true)}
+                                style={{ padding: '1rem', cursor: 'pointer', border: '1.5px solid var(--border)' }}
+                            >
+                                <div style={{ color: '#2563EB', marginBottom: '0.45rem' }}>
+                                    <Layers size={22} />
+                                </div>
+                                <h4 style={{ margin: 0, fontSize: '0.92rem', fontWeight: 700 }}>Worksheet Library</h4>
+                                <p style={{ margin: '0.2rem 0 0', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                    Saved worksheets for practice
+                                </p>
+                            </div>
+
+                            <Link 
+                                to="/calendar"
+                                className="card hover-lift" 
+                                style={{ padding: '1rem', textDecoration: 'none', color: 'inherit', border: '1.5px solid var(--border)' }}
+                            >
+                                <div style={{ color: '#D97706', marginBottom: '0.45rem' }}>
+                                    <Calendar size={22} />
+                                </div>
+                                <h4 style={{ margin: 0, fontSize: '0.92rem', fontWeight: 700 }}>Calendar</h4>
+                                <p style={{ margin: '0.2rem 0 0', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                    Tests, dictation &amp; reminder rules
+                                </p>
+                            </Link>
+
+                            <div 
+                                className="card hover-lift" 
+                                onClick={() => setActiveTab('progress')}
+                                style={{ padding: '1rem', cursor: 'pointer', border: '1.5px solid var(--border)' }}
+                            >
+                                <div style={{ color: '#10B981', marginBottom: '0.45rem' }}>
+                                    <TrendingUp size={22} />
+                                </div>
+                                <h4 style={{ margin: 0, fontSize: '0.92rem', fontWeight: 700 }}>Progress Report</h4>
+                                <p style={{ margin: '0.2rem 0 0', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                    Monthly &amp; quarterly share sheet
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* TODAY'S ACTIVE TASKS SUMMARY */}
+                    <div className="card" style={{ padding: '1.25rem', border: '1.5px solid var(--border)' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.85rem' }}>
+                            <h3 style={{ fontSize: '1.05rem', margin: 0, fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                                <CheckSquare size={18} color="var(--teal)" />
+                                Today's Homeroom Tasks ({filteredHomework.length})
+                            </h3>
+                            <button
+                                type="button"
+                                onClick={() => setActiveTab('today')}
+                                style={{ background: 'none', border: 'none', color: 'var(--teal)', fontSize: '0.82rem', fontWeight: 600, cursor: 'pointer' }}
+                            >
+                                View Detailed Plan →
+                            </button>
+                        </div>
+
+                        {filteredHomework.length === 0 ? (
+                            <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                                No tasks uploaded yet today. Tap "Upload Teams Post" above to begin.
+                            </p>
+                        ) : (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
+                                {filteredHomework.slice(0, 3).map(hw => (
+                                    <div key={hw.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.75rem', background: 'var(--surface-hover)', borderRadius: 'var(--radius-sm)' }}>
+                                        <div>
+                                            <span style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-main)' }}>
+                                                {hw.subject}: {hw.title}
+                                            </span>
+                                            <p style={{ margin: '0.15rem 0 0', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                                {hw.description || 'Assigned in homeroom'}
+                                            </p>
+                                        </div>
+                                        <span className="chip-amber">
+                                            {hw.dueDate || 'Today'}
+                                        </span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {/* SCREEN 2: TODAY'S PLAN */}
+            {activeTab === 'today' && (
+                <div id="panel-today" role="tabpanel" aria-labelledby="tab-today" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem' }}>
+                        <div>
+                            <h2 style={{ fontSize: '1.25rem', margin: 0, fontWeight: 800, display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                                <CheckSquare size={20} color="var(--teal)" />
+                                Today's Plan by Subject
+                            </h2>
+                            <p style={{ margin: '0.2rem 0 0', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                                Homework split by subject with due dates &amp; contextual actions (FR-5)
+                            </p>
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '0.5rem' }}>
+                            <button
+                                type="button"
+                                onClick={() => setIsTeamsModalOpen(true)}
+                                className="btn-teal"
+                                style={{ padding: '0.5rem 0.85rem', fontSize: '0.82rem' }}
+                            >
+                                <Camera size={15} />
+                                <span>Upload Teams Post</span>
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setIsManualModalOpen(true)}
+                                className="btn btn-secondary"
+                                style={{ padding: '0.5rem 0.85rem', fontSize: '0.82rem' }}
+                            >
+                                <BookOpen size={15} />
+                                <span>Add from Almanac</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    {filteredHomework.length === 0 ? (
+                        <div className="card" style={{ padding: '2.5rem', textAlign: 'center' }}>
+                            <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '1rem' }}>
+                                No tasks in today's plan yet.
+                            </p>
+                            <button
+                                type="button"
+                                onClick={() => setIsTeamsModalOpen(true)}
+                                className="btn-teal"
+                                style={{ margin: '0 auto', padding: '0.65rem 1.25rem' }}
+                            >
+                                <Camera size={16} />
+                                <span>Upload Teams Post to Generate Plan</span>
+                            </button>
+                        </div>
+                    ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                            {filteredHomework.map(hw => (
+                                <div 
+                                    key={hw.id} 
+                                    className="card" 
+                                    style={{ 
+                                        padding: '1.15rem', 
+                                        border: '1.5px solid var(--border)',
+                                        borderLeft: `5px solid ${hw.subject === 'English' ? '#10B981' : hw.subject === 'Math' ? '#4F46E5' : '#D97706'}`
+                                    }}
+                                >
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.5rem' }}>
+                                        <div>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                                                <span style={{
+                                                    background: hw.subject === 'Math' ? '#EEF2FF' : hw.subject === 'English' ? '#F0FDF4' : '#FEF3C7',
+                                                    color: hw.subject === 'Math' ? '#4F46E5' : hw.subject === 'English' ? '#166534' : '#92400E',
+                                                    padding: '0.2rem 0.6rem',
+                                                    borderRadius: '1rem',
+                                                    fontSize: '0.75rem',
+                                                    fontWeight: 700
+                                                }}>
+                                                    {hw.subject}
+                                                </span>
+                                                <span className="chip-amber">
+                                                    📅 {hw.dueDate || 'Today'}
+                                                </span>
+                                                {hw.reminderRule && (
+                                                    <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', background: 'var(--surface-hover)', padding: '0.15rem 0.5rem', borderRadius: '1rem' }}>
+                                                        🔔 {hw.reminderRule.replace(/_/g, ' ')}
+                                                    </span>
+                                                )}
+                                                {hw.hasCorrectionsNotice && (
+                                                    <span style={{ background: '#FEE2E2', color: '#991B1B', padding: '0.15rem 0.55rem', borderRadius: '1rem', fontSize: '0.72rem', fontWeight: 700 }}>
+                                                        ✍️ Sign &amp; Do Corrections
+                                                    </span>
+                                                )}
+                                            </div>
+
+                                            <h3 style={{ fontSize: '1rem', margin: '0.45rem 0 0.2rem', fontWeight: 700, color: 'var(--text-main)' }}>
+                                                {hw.title}
+                                            </h3>
+                                            <p style={{ margin: 0, fontSize: '0.85rem', color: '#475569', lineHeight: 1.4 }}>
+                                                {hw.description || 'Assigned in homeroom'}
+                                            </p>
+                                        </div>
+
+                                        <span style={{
+                                            fontSize: '0.75rem',
+                                            fontWeight: 700,
+                                            padding: '0.2rem 0.6rem',
+                                            borderRadius: '1rem',
+                                            background: hw.submissionStatus === 'verified_complete' ? '#DCFCE7' : '#FEF3C7',
+                                            color: hw.submissionStatus === 'verified_complete' ? '#166534' : '#92400E'
+                                        }}>
+                                            {hw.submissionStatus === 'verified_complete' ? '✅ Complete' : '⏳ Pending'}
+                                        </span>
+                                    </div>
+
+                                    {/* Supporting Material & Actual Homework Content (FR-5) */}
+                                    <div style={{
+                                        marginTop: '0.85rem',
+                                        padding: '0.85rem',
+                                        background: '#F8FAFC',
+                                        borderRadius: 'var(--radius-md)',
+                                        border: '1.5px dashed #CBD5E1',
+                                        display: 'flex',
+                                        flexDirection: 'column',
+                                        gap: '0.65rem'
+                                    }}>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                                                <FileText size={16} color="var(--teal)" />
+                                                <span style={{ fontSize: '0.84rem', fontWeight: 700, color: '#1E293B' }}>
+                                                    Supporting Material &amp; Homework Content
+                                                </span>
+                                                <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                                                    ({((hw.supportingMaterialUrls?.length || 0) + (hw.assignmentImageUrls?.length || 0))} attached)
+                                                </span>
+                                            </div>
+
+                                            <button
+                                                type="button"
+                                                disabled={isUploadingSupporting && uploadingSupportingHwId === hw.id}
+                                                onClick={() => {
+                                                    setUploadingSupportingHwId(hw.id);
+                                                    supportingFileInputRef.current?.click();
+                                                }}
+                                                className="btn-teal"
+                                                style={{
+                                                    padding: '0.4rem 0.85rem',
+                                                    fontSize: '0.8rem',
+                                                    borderRadius: '1rem',
+                                                    cursor: (isUploadingSupporting && uploadingSupportingHwId === hw.id) ? 'not-allowed' : 'pointer'
+                                                }}
+                                            >
+                                                <Camera size={14} className={(isUploadingSupporting && uploadingSupportingHwId === hw.id) ? 'animate-spin' : ''} />
+                                                <span>
+                                                    {(isUploadingSupporting && uploadingSupportingHwId === hw.id) 
+                                                        ? 'Uploading & Transcribing...' 
+                                                        : '+ Upload Textbook Page / Content'}
+                                                </span>
+                                            </button>
+                                        </div>
+
+                                        {/* Prompt from Teacher / AI guidance */}
+                                        {hw.requiredFilesPrompt && (
+                                            <div style={{ background: '#EFF6FF', border: '1px solid #BFDBFE', padding: '0.45rem 0.65rem', borderRadius: 'var(--radius-sm)', fontSize: '0.78rem', color: '#1D4ED8', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                                                <span>💡</span>
+                                                <span><strong>Teacher note:</strong> {hw.requiredFilesPrompt}</span>
+                                            </div>
+                                        )}
+
+                                        {/* Attached Supporting Images Thumbnails */}
+                                        {((hw.supportingMaterialUrls && hw.supportingMaterialUrls.length > 0) || (hw.assignmentImageUrls && hw.assignmentImageUrls.length > 0)) ? (
+                                            <div>
+                                                <div style={{ display: 'flex', gap: '0.55rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                                                    {[...(hw.assignmentImageUrls || []), ...(hw.supportingMaterialUrls || [])].filter((url, idx, self) => self.indexOf(url) === idx).map((url, imgIdx) => (
+                                                        <div 
+                                                            key={imgIdx} 
+                                                            onClick={() => setViewingFullImage(url)}
+                                                            style={{ 
+                                                                position: 'relative', 
+                                                                width: '56px', 
+                                                                height: '56px', 
+                                                                borderRadius: 'var(--radius-sm)', 
+                                                                overflow: 'hidden', 
+                                                                border: '1.5px solid var(--border)',
+                                                                cursor: 'pointer',
+                                                                boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
+                                                            }}
+                                                            title="Click to view full size"
+                                                        >
+                                                            <img src={url} alt={`Supporting page ${imgIdx + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                                            <span style={{ position: 'absolute', bottom: 1, right: 1, background: 'rgba(0,0,0,0.65)', color: 'white', fontSize: '0.62rem', padding: '0 3px', borderRadius: '2px', fontWeight: 600 }}>
+                                                                P{imgIdx + 1}
+                                                            </span>
+                                                        </div>
+                                                    ))}
+
+                                                    <button
+                                                        type="button"
+                                                        disabled={isExtractingQuestions === hw.id}
+                                                        onClick={() => handleExtractQuestionsManually(hw)}
+                                                        style={{
+                                                            background: 'white',
+                                                            border: '1px solid var(--border)',
+                                                            borderRadius: 'var(--radius-sm)',
+                                                            padding: '0.4rem 0.65rem',
+                                                            fontSize: '0.75rem',
+                                                            color: 'var(--text-main)',
+                                                            cursor: isExtractingQuestions === hw.id ? 'not-allowed' : 'pointer',
+                                                            display: 'inline-flex',
+                                                            alignItems: 'center',
+                                                            gap: '0.35rem',
+                                                            fontWeight: 600
+                                                        }}
+                                                    >
+                                                        <Sparkles size={13} color="var(--teal)" className={isExtractingQuestions === hw.id ? 'animate-spin' : ''} />
+                                                        <span>{isExtractingQuestions === hw.id ? 'Extracting questions...' : '✨ Transcribe Questions'}</span>
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <p style={{ margin: 0, fontSize: '0.76rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                                                No textbook or worksheet photos attached yet. Tap "+ Upload Textbook Page / Content" above to attach pages and build the complete homework.
+                                            </p>
+                                        )}
+
+                                        {/* Digitized Questions & Exercises */}
+                                        {hw.extractedContent && (
+                                            <div style={{ marginTop: '0.4rem', background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: 'var(--radius-sm)', padding: '0.65rem 0.85rem' }}>
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.35rem' }}>
+                                                    <CheckCircle2 size={14} color="#059669" />
+                                                    <span style={{ fontSize: '0.78rem', fontWeight: 700, color: '#0F172A' }}>
+                                                        Digitized Homework Questions (from Textbook / Worksheet):
+                                                    </span>
+                                                </div>
+                                                <pre style={{ margin: 0, fontSize: '0.78rem', color: '#334155', fontFamily: 'inherit', whiteSpace: 'pre-wrap', lineHeight: 1.45 }}>
+                                                    {hw.extractedContent}
+                                                </pre>
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    {/* CONTEXTUAL ACTION BUTTONS (FR-5) */}
+                                    <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '1rem', paddingTop: '0.85rem', borderTop: '1px solid var(--border)' }}>
+                                        {/* English: Build Spelling List */}
+                                        {hw.subject === 'English' && (
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    setSpellingChapterTitle(hw.title);
+                                                    setIsSpellingModalOpen(true);
+                                                }}
+                                                className="btn-teal"
+                                                style={{ padding: '0.45rem 0.85rem', fontSize: '0.8rem' }}
+                                            >
+                                                <Volume2 size={15} />
+                                                <span>Build Spelling List</span>
+                                            </button>
+                                        )}
+
+                                        {/* If Teacher marked "Do corrections" */}
+                                        {hw.hasCorrectionsNotice && (
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    setCorrectionsSubject(hw.subject);
+                                                    setIsCorrectionsModalOpen(true);
+                                                }}
+                                                style={{
+                                                    background: '#FEE2E2',
+                                                    color: '#991B1B',
+                                                    border: '1px solid #FCA5A5',
+                                                    borderRadius: 'var(--radius-md)',
+                                                    padding: '0.45rem 0.85rem',
+                                                    fontSize: '0.8rem',
+                                                    fontWeight: 700,
+                                                    cursor: 'pointer',
+                                                    display: 'inline-flex',
+                                                    alignItems: 'center',
+                                                    gap: '0.35rem'
+                                                }}
+                                            >
+                                                <Award size={15} />
+                                                <span>Guide Test Corrections</span>
+                                            </button>
+                                        )}
+
+                                        {/* Check Solved Notebook */}
+                                        <button
+                                            type="button"
+                                            onClick={() => setViewingHomework(hw)}
+                                            className="btn btn-secondary"
+                                            style={{ padding: '0.45rem 0.85rem', fontSize: '0.8rem' }}
+                                        >
+                                            <Eye size={15} />
+                                            <span>Check Notebook &amp; Feedback</span>
+                                        </button>
+
+                                        {/* Adaptive Practice Sheet */}
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setCreationMode('generate_test');
+                                                setSelectedSubject(hw.subject);
+                                                setActiveTab('practice');
+                                            }}
+                                            className="btn btn-primary"
+                                            style={{ padding: '0.45rem 0.85rem', fontSize: '0.8rem' }}
+                                        >
+                                            <Sparkles size={15} />
+                                            <span>Generate Practice Sheet</span>
+                                        </button>
+                                    </div>
+                                </div>
+                            ))}
+                            <input
+                                ref={supportingFileInputRef}
+                                type="file"
+                                accept="image/*,.pdf"
+                                multiple
+                                style={{ display: 'none' }}
+                                onChange={handleSupportingFileChange}
+                            />
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {/* TAB PANEL: PRACTICE & WORKSHEET LIBRARY (SCREEN 4) */}
+            {(activeTab === 'practice' || activeTab === 'homework_and_tests') && (
+                <div id="panel-homework-tests" role="tabpanel" aria-labelledby="tab-practice" style={{ display: 'flex', flexDirection: 'column', gap: '1.75rem' }}>
+                    
+                    {/* Top Library Drawer Trigger Banner (FR-11) */}
+                    <div style={{
+                        background: 'linear-gradient(135deg, #1E293B, #0F172A)',
+                        borderRadius: 'var(--radius-lg)',
+                        padding: '1rem 1.25rem',
+                        color: 'white',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        flexWrap: 'wrap',
+                        gap: '0.75rem'
+                    }}>
+                        <div>
+                            <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#38BDF8', textTransform: 'uppercase' }}>
+                                FR-11 · Worksheet Reuse Library
+                            </span>
+                            <h3 style={{ margin: '0.2rem 0', fontSize: '1.1rem', fontWeight: 800 }}>
+                                Browse All Saved Worksheets
+                            </h3>
+                            <p style={{ margin: 0, fontSize: '0.78rem', color: '#CBD5E1' }}>
+                                Every uploaded worksheet is archived here to generate adaptive practice anytime.
+                            </p>
+                        </div>
+
+                        <button
+                            type="button"
+                            onClick={() => setIsWorksheetLibraryOpen(true)}
+                            className="btn-teal"
+                            style={{ padding: '0.55rem 1rem', fontSize: '0.82rem' }}
+                        >
+                            <Layers size={16} />
+                            <span>Open Worksheet Library</span>
+                        </button>
+                    </div>
+
                     {/* CREATION HUB CARD WITH TOGGLE */}
                     <div className="card" style={{ border: '1.5px solid var(--border)', boxShadow: '0 4px 16px rgba(0,0,0,0.04)' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.85rem', marginBottom: '1.25rem' }}>
@@ -876,6 +1647,32 @@ const ParentDashboard = () => {
                                                     </button>
                                                 </div>
                                             ))}
+                                        </div>
+                                    )}
+
+                                    {hwFiles.length > 0 && (
+                                        <div style={{ marginTop: '0.65rem' }}>
+                                            <button
+                                                type="button"
+                                                onClick={handleAutoReadClick}
+                                                disabled={isAutoReadingHw}
+                                                style={{
+                                                    background: 'rgba(13, 148, 136, 0.1)',
+                                                    color: 'var(--teal)',
+                                                    border: '1px solid var(--teal)',
+                                                    borderRadius: 'var(--radius-sm)',
+                                                    padding: '0.45rem 0.85rem',
+                                                    fontSize: '0.82rem',
+                                                    fontWeight: 600,
+                                                    cursor: isAutoReadingHw ? 'not-allowed' : 'pointer',
+                                                    display: 'inline-flex',
+                                                    alignItems: 'center',
+                                                    gap: '0.4rem'
+                                                }}
+                                            >
+                                                <Sparkles size={14} className={isAutoReadingHw ? 'animate-spin' : ''} />
+                                                {isAutoReadingHw ? 'Reading photo with AI OCR...' : 'Auto-read details from photo with AI'}
+                                            </button>
                                         </div>
                                     )}
                                 </div>
@@ -1274,8 +2071,35 @@ const ParentDashboard = () => {
                                                     </div>
                                                 </div>
 
-                                                {/* View Verification Report CTA */}
-                                                {hw.verificationResult && (
+                                                {/* Verification CTAs */}
+                                                {!hw.verificationResult ? (
+                                                    <button
+                                                        type="button"
+                                                        disabled={isVerifyingNotebook && verifyingHwId === hw.id}
+                                                        onClick={() => {
+                                                            setVerifyingHwId(hw.id);
+                                                            parentNotebookInputRef.current?.click();
+                                                        }}
+                                                        className="hover-lift"
+                                                        style={{
+                                                            marginLeft: 'auto',
+                                                            background: 'rgba(16, 185, 129, 0.1)',
+                                                            color: '#059669',
+                                                            border: '1.5px solid #10b981',
+                                                            borderRadius: 'var(--radius-sm)',
+                                                            padding: '0.45rem 0.85rem',
+                                                            fontWeight: 700,
+                                                            fontSize: '0.8rem',
+                                                            cursor: (isVerifyingNotebook && verifyingHwId === hw.id) ? 'not-allowed' : 'pointer',
+                                                            display: 'flex',
+                                                            alignItems: 'center',
+                                                            gap: '0.4rem'
+                                                        }}
+                                                    >
+                                                        <Sparkles size={14} className={(isVerifyingNotebook && verifyingHwId === hw.id) ? 'animate-spin' : ''} />
+                                                        {(isVerifyingNotebook && verifyingHwId === hw.id) ? 'Verifying with AI...' : 'Check / Upload Solved Work'}
+                                                    </button>
+                                                ) : (
                                                     <button
                                                         type="button"
                                                         onClick={() => setViewingHomework(hw)}
@@ -1303,6 +2127,14 @@ const ParentDashboard = () => {
                                         </div>
                                     );
                                 })}
+                                <input
+                                    ref={parentNotebookInputRef}
+                                    type="file"
+                                    accept="image/*"
+                                    multiple
+                                    style={{ display: 'none' }}
+                                    onChange={handleParentVerifySubmission}
+                                />
                             </div>
                         )}
                     </div>
@@ -1891,9 +2723,64 @@ const ParentDashboard = () => {
                 </div>
             )}
 
-            {/* TAB PANEL 3: ANALYTICS & TOPIC MASTERY */}
-            {activeTab === 'analytics' && (
-                <div id="panel-analytics" role="tabpanel" aria-labelledby="tab-analytics" style={{ display: 'flex', flexDirection: 'column', gap: '1.75rem' }}>
+            {/* SCREEN 5: TEST CORRECTIONS VIEW */}
+            {activeTab === 'corrections' && (
+                <div id="panel-corrections" role="tabpanel" aria-labelledby="tab-corrections" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem' }}>
+                        <div>
+                            <h2 style={{ fontSize: '1.25rem', margin: 0, fontWeight: 800, display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                                <Award size={20} color="#EF4444" />
+                                Test Corrections &amp; Remediation (FR-13 to FR-15)
+                            </h2>
+                            <p style={{ margin: '0.2rem 0 0', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                                Triggered by teacher's "do corrections" note · guided correction walkthrough
+                            </p>
+                        </div>
+
+                        <button
+                            type="button"
+                            onClick={() => setIsCorrectionsModalOpen(true)}
+                            className="btn-teal"
+                            style={{ padding: '0.55rem 1rem', fontSize: '0.85rem' }}
+                        >
+                            <Camera size={16} />
+                            <span>Upload Marked Test Paper</span>
+                        </button>
+                    </div>
+
+                    <div className="card" style={{ padding: '2rem 1.5rem', border: '1.5px solid var(--border)' }}>
+                        <div style={{ textAlign: 'center', maxWidth: '460px', margin: '0 auto', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.85rem' }}>
+                            <div style={{ background: 'rgba(239, 68, 68, 0.1)', color: '#EF4444', padding: '1rem', borderRadius: '50%' }}>
+                                <Award size={36} />
+                            </div>
+                            <h3 style={{ fontSize: '1.15rem', margin: 0, fontWeight: 800 }}>
+                                Teacher Said "Sign Test &amp; Do Corrections"?
+                            </h3>
+                            <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-muted)', lineHeight: 1.4 }}>
+                                Upload a photo of the marked test paper with red marks. HomeTutor will record the score, identify weak topics, and guide your child through each mistake with clear step-by-step methods and memory tips.
+                            </p>
+                            <button
+                                type="button"
+                                onClick={() => setIsCorrectionsModalOpen(true)}
+                                className="btn-teal"
+                                style={{ padding: '0.75rem 1.25rem', fontSize: '0.9rem', width: '100%', maxWidth: '320px' }}
+                            >
+                                <Sparkles size={18} />
+                                <span>Start Test Corrections Walkthrough</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* SCREEN 6: PROGRESS REPORT & ANALYTICS */}
+            {(activeTab === 'progress' || activeTab === 'analytics') && (
+                <div id="panel-analytics" role="tabpanel" aria-labelledby="tab-progress" style={{ display: 'flex', flexDirection: 'column', gap: '1.75rem' }}>
+                    <ProgressReportView 
+                        tests={filteredTests} 
+                        dailyHomeworkList={filteredHomework} 
+                        selectedChildName={childrenList.find(c => c.id === selectedChildId)?.name || 'Alexander (Grade 2 · Class II A)'} 
+                    />
                     {/* Subject Tiles */}
                     <div className="card">
                         <h2 style={{ fontSize: '1.25rem', marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -2333,6 +3220,52 @@ const ParentDashboard = () => {
             isOpen={isUpgradeModalOpen}
             onClose={() => setIsUpgradeModalOpen(false)}
             highlightReason={upgradeReason}
+        />
+
+        {/* PRD PROTOTYPE MODALS */}
+        <TeamsUploadModal
+            isOpen={isTeamsModalOpen}
+            onClose={() => setIsTeamsModalOpen(false)}
+            onSuccess={() => {
+                setActiveTab('today');
+            }}
+        />
+
+        <ManualHomeworkModal
+            isOpen={isManualModalOpen}
+            onClose={() => setIsManualModalOpen(false)}
+            onSuccess={() => {
+                setActiveTab('today');
+            }}
+        />
+
+        <SpellingListModal
+            isOpen={isSpellingModalOpen}
+            onClose={() => setIsSpellingModalOpen(false)}
+            defaultChapterTitle={spellingChapterTitle}
+        />
+
+        <WorksheetLibraryModal
+            isOpen={isWorksheetLibraryOpen}
+            onClose={() => setIsWorksheetLibraryOpen(false)}
+            onSelectForPractice={(ws, diff) => {
+                setCreationMode('generate_test');
+                setSelectedSubject(ws.subject);
+                setDifficulty(diff);
+                setActiveTab('practice');
+            }}
+        />
+
+        <TestCorrectionsModal
+            isOpen={isCorrectionsModalOpen}
+            onClose={() => setIsCorrectionsModalOpen(false)}
+            defaultSubject={correctionsSubject}
+            onStartPractice={(topic, diff) => {
+                setCreationMode('generate_test');
+                setCustomInstructions(`Focus specifically on remediation for weak topic: ${topic}`);
+                setDifficulty(diff);
+                setActiveTab('practice');
+            }}
         />
         </>
     );

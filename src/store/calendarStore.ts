@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase';
 import useAuthStore from './authStore';
 
 export type CalendarEventType = 'exam' | 'test_prep' | 'study_block';
+export type ReminderRule = '1_day_before' | '2_days_before' | 'same_morning';
 
 export interface CalendarEvent {
     id: string;
@@ -18,89 +19,12 @@ export interface CalendarEvent {
     description?: string;
     isCompleted?: boolean;
     testId?: string;
+    reminderRule?: ReminderRule;
+    isDictationOrTest?: boolean;
     createdAt?: string;
 }
 
-// Helper to format date offset from today
-const getRelativeDate = (offsetDays: number): string => {
-    const d = new Date();
-    d.setDate(d.getDate() + offsetDays);
-    return d.toISOString().split('T')[0];
-};
-
-export const INITIAL_SAMPLE_EVENTS: CalendarEvent[] = [
-    {
-        id: 'evt-exam-1',
-        parentId: 'superuser-parent-001',
-        childId: 'superuser-student-001',
-        childName: 'Alex',
-        title: 'Mid-Term Mathematics Exam (School)',
-        type: 'exam',
-        subject: 'Math',
-        date: getRelativeDate(5),
-        startTime: '09:00',
-        endTime: '11:30',
-        description: 'Comprehensive exam covering Linear Equations, Fractions, and Geometry. Bring scientific calculator.',
-        isCompleted: false
-    },
-    {
-        id: 'evt-test-1',
-        parentId: 'superuser-parent-001',
-        childId: 'superuser-student-001',
-        childName: 'Alex',
-        title: 'Diagnostic Drill: Linear Equations Practice',
-        type: 'test_prep',
-        subject: 'Math',
-        date: getRelativeDate(1),
-        startTime: '16:00',
-        endTime: '16:45',
-        description: 'Targeted practice for distributive property and 2-step linear equations to prepare for the mid-term.',
-        isCompleted: false,
-        testId: 'demo-test-1'
-    },
-    {
-        id: 'evt-study-1',
-        parentId: 'superuser-parent-001',
-        childId: 'superuser-student-001',
-        childName: 'Alex',
-        title: 'Focus Study Block: Physics & Motion Notes',
-        type: 'study_block',
-        subject: 'Science',
-        date: getRelativeDate(0), // Today
-        startTime: '17:00',
-        endTime: '18:15',
-        description: 'Dedicated study time blocked by parent. Review textbook chapter 4 and solve practice problem set.',
-        isCompleted: false
-    },
-    {
-        id: 'evt-study-2',
-        parentId: 'superuser-parent-001',
-        childId: 'superuser-student-001',
-        childName: 'Alex',
-        title: 'Evening Homework & Reading Time',
-        type: 'study_block',
-        subject: 'English',
-        date: getRelativeDate(0), // Today
-        startTime: '19:00',
-        endTime: '20:00',
-        description: 'Complete grammar worksheet and read chapter 5.',
-        isCompleted: true
-    },
-    {
-        id: 'evt-exam-2',
-        parentId: 'superuser-parent-001',
-        childId: 'superuser-student-001',
-        childName: 'Alex',
-        title: 'Science Periodic Assessment 2',
-        type: 'exam',
-        subject: 'Science',
-        date: getRelativeDate(12),
-        startTime: '10:00',
-        endTime: '11:30',
-        description: 'Newtonian mechanics, friction, and laws of motion.',
-        isCompleted: false
-    }
-];
+export const INITIAL_SAMPLE_EVENTS: CalendarEvent[] = [];
 
 interface CalendarState {
     events: CalendarEvent[];
@@ -114,17 +38,20 @@ interface CalendarState {
     toggleComplete: (id: string) => Promise<void>;
 }
 
-const STORAGE_KEY = 'hometutor_calendar_events_v1';
+const STORAGE_KEY = 'hometutor_calendar_events_v2';
 
 const getStoredEvents = (): CalendarEvent[] => {
     try {
         const stored = localStorage.getItem(STORAGE_KEY);
         if (stored) {
             const parsed = JSON.parse(stored);
-            if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+            // Filter out any legacy superuser sample demo events
+            if (Array.isArray(parsed)) {
+                return parsed.filter(e => !e.id?.startsWith('evt-exam-') && !e.id?.startsWith('evt-test-') && !e.id?.startsWith('evt-study-'));
+            }
         }
     } catch {}
-    return INITIAL_SAMPLE_EVENTS;
+    return [];
 };
 
 const saveStoredEvents = (events: CalendarEvent[]) => {
